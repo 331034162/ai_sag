@@ -8,7 +8,7 @@ doc_parser - 文档解析工具包
 - image: 图像 OCR 解析（支持水印检测/签章检测/多种 OCR 后端，可被 PDF/Word/Excel 复用）
 """
 
-from ai_sag.doc_parser.pdf import (
+from .pdf import (
     PDFParser,
     PDFTypeDetector,
     ImageProcessor,
@@ -25,7 +25,7 @@ from ai_sag.doc_parser.pdf import (
     save_markdown as save_pdf_markdown,
 )
 
-from ai_sag.doc_parser.excel import (
+from .excel import (
     ExcelParser,
     SheetContent,
     ExcelResult,
@@ -38,7 +38,7 @@ from ai_sag.doc_parser.excel import (
     save_markdown as save_excel_markdown,
 )
 
-from ai_sag.doc_parser.word import (
+from .word import (
     WordParser,
     WordResult,
     WordParagraph,
@@ -51,7 +51,7 @@ from ai_sag.doc_parser.word import (
     save_markdown as save_word_markdown,
 )
 
-from ai_sag.doc_parser.image import (
+from .image import (
     ImageParser,
     ImageOCRResult,
     parse_image,

@@ -22,24 +22,24 @@ from typing import Optional, Union
 import cv2
 import numpy as np
 
-from ai_sag.doc_parser.image.config import (
+from .config import (
     setup_logging,
     OCR_FONT_NAME,
     OCR_FONT_MIN_SIZE,
 )
-from ai_sag.doc_parser.image.models import ImageOCRResult
-from ai_sag.doc_parser.image.processor import ImageProcessor
-from ai_sag.doc_parser.image.ocr import (
+from .models import ImageOCRResult
+from .processor import ImageProcessor
+from .ocr import (
     BaseOCREngine,
     OCRBackend,
     get_ocr_engine,
 )
-from ai_sag.doc_parser.image.table.config import (
+from .table.config import (
     ENABLE_TABLE_RECOGNITION,
     TABLE_RECOGNITION_BACKEND,
 )
-from ai_sag.doc_parser.image.table.models import TableRecognitionResult
-from ai_sag.doc_parser.image.table.recognizer import recognize_tables_in_image
+from .table.models import TableRecognitionResult
+from .table.recognizer import recognize_tables_in_image
 
 setup_logging()
 logger = logging.getLogger(__name__)

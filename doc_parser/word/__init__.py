@@ -13,16 +13,16 @@ Word 文档解析子包
 默认使用 V1 版本，也可通过 doc_parser.word.v2 显式使用 V2 版本。
 """
 
-from ai_sag.doc_parser.word.v1.models import WordResult, WordParagraph, WordTable, WordImage
-from ai_sag.doc_parser.word.v1.config import (
+from .v1.models import WordResult, WordParagraph, WordTable, WordImage
+from .v1.config import (
     DEFAULT_OCR_BACKEND,
     IMAGE_MIN_AREA_FOR_OCR,
     ENABLE_SIGNING_DETECTION,
     SIGNING_KEYWORDS,
 )
-from ai_sag.doc_parser.word.v1.parser import WordParser
-from ai_sag.doc_parser.word.v1.formatter import print_summary, save_markdown, save_text
-from ai_sag.doc_parser.word.v1.parser import parse_word, parse_directory
+from .v1.parser import WordParser
+from .v1.formatter import print_summary, save_markdown, save_text
+from .v1.parser import parse_word, parse_directory
 
 __all__ = [
     "WordResult",

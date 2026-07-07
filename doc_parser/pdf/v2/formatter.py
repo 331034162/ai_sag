@@ -6,7 +6,7 @@
 import os
 import logging
 
-from ai_sag.doc_parser.pdf.v2.models import PDFResult
+from .models import PDFResult
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from ai_sag.doc_parser.image.config import (
+from .config import (
     WATERMARK_CONTOUR_THRESHOLD,
     WATERMARK_BG_WHITE_RATIO,
     WATERMARK_BG_DARK_RATIO,

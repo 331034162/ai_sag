@@ -13,12 +13,12 @@
 import logging
 from typing import Optional
 
-from ai_sag.doc_parser.image.ocr import OCRTextBlock
-from ai_sag.doc_parser.image.table.models import (
+from ..ocr import OCRTextBlock
+from .models import (
     TableCell,
     TableRecognitionResult,
 )
-from ai_sag.doc_parser.image.table.formatter import table_to_markdown
+from .formatter import table_to_markdown
 
 logger = logging.getLogger(__name__)
 

@@ -8,13 +8,13 @@ Word 文档解析器
 
 用法：
     # 便捷函数
-    from ai_sag.doc_parser.word import parse_word, parse_directory
+    from .. import parse_word, parse_directory
 
     result = parse_word("/path/to/file.docx")
     results = parse_directory("/path/to/dir")
 
     # 类实例
-    from ai_sag.doc_parser.word import WordParser
+    from .. import WordParser
 
     parser = WordParser(output_dir="./output", ocr_backend="rapidocr")
     result = parser.parse("/path/to/file.docx")
@@ -30,14 +30,14 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from lxml import etree
 
-from ai_sag.doc_parser.word.v2.config import setup_logging, DEFAULT_OCR_BACKEND
-from ai_sag.doc_parser.word.v2.models import WordResult, WordParagraph, WordTable, WordImage
-from ai_sag.doc_parser.word.v2.table_handler import table_to_markdown
-from ai_sag.doc_parser.word.v2.image_handler import (
+from .config import setup_logging, DEFAULT_OCR_BACKEND
+from .models import WordResult, WordParagraph, WordTable, WordImage
+from .table_handler import table_to_markdown
+from .image_handler import (
     extract_images_from_document,
     extract_images_from_paragraph,
 )
-from ai_sag.doc_parser.image.ocr import OCRBackend
+from ...image.ocr import OCRBackend
 
 # 初始化日志
 setup_logging()
@@ -206,7 +206,7 @@ class WordParser:
 
         # 保存到磁盘
         if self.output_dir:
-            from ai_sag.doc_parser.word.v2.formatter import save_markdown, save_text
+            from .formatter import save_markdown, save_text
             save_markdown(result, os.path.join(self.output_dir, f"{path.stem}.md"))
             save_text(result, os.path.join(self.output_dir, f"{path.stem}.txt"))
 

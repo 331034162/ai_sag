@@ -9,11 +9,11 @@ V5 版本的 Excel 解析能力（二维数组 + 原始类型 + 公式值）：
 - 便捷函数: parse_excel, parse_directory
 """
 
-from ai_sag.doc_parser.excel.v5.models import Section, SheetData, ExcelData
-from ai_sag.doc_parser.excel.v5.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
-from ai_sag.doc_parser.excel.v5.parser import ExcelParser
-from ai_sag.doc_parser.excel.v5.formatter import print_summary, save_json
-from ai_sag.doc_parser.excel.v5.parser import parse_excel, parse_directory
+from .models import Section, SheetData, ExcelData
+from .config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
+from .parser import ExcelParser
+from .formatter import print_summary, save_json
+from .parser import parse_excel, parse_directory
 
 __all__ = [
     "Section",

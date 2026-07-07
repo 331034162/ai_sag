@@ -16,16 +16,16 @@ import numpy as np
 import cv2
 import pymupdf4llm
 
-from ai_sag.doc_parser.pdf.v2.models import ImageInfo, PageContent, PDFResult, PDFTable
-from ai_sag.doc_parser.pdf.v2.detector import PDFTypeDetector
-from ai_sag.doc_parser.pdf.v2.image_processor import ImageProcessor
-from ai_sag.doc_parser.pdf.v2.formatter import save_markdown, save_text
-from ai_sag.doc_parser.image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
-from ai_sag.doc_parser.pdf.v2.config import (
+from .models import ImageInfo, PageContent, PDFResult, PDFTable
+from .detector import PDFTypeDetector
+from .image_processor import ImageProcessor
+from .formatter import save_markdown, save_text
+from ...image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
+from .config import (
     OCR_PAGE_DPI, setup_logging,
     ENABLE_TABLE_DETECTION, TABLE_MIN_ROWS, TABLE_MIN_COLS,
 )
-from ai_sag.doc_parser.pdf.v2.table_handler import (
+from .table_handler import (
     table_to_markdown,
     extract_tables_from_struct_tree,
     _looks_like_toc,

@@ -6,7 +6,7 @@
 import os
 import logging
 
-from ai_sag.doc_parser.excel.v2.models import ExcelResult
+from .models import ExcelResult
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ from typing import Any, Optional, List, Dict, Tuple
 
 from openpyxl.utils import get_column_letter
 
-from ai_sag.doc_parser.excel.v4.config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+from .config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
 
 
 # ============================================================

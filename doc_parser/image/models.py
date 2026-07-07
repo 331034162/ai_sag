@@ -8,7 +8,7 @@
 
 from dataclasses import dataclass, field
 
-from ai_sag.doc_parser.image.table.models import (  # noqa: E402
+from .table.models import (  # noqa: E402
     TableCell,
     TableRecognitionResult,
 )

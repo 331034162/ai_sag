@@ -7,7 +7,7 @@
 import os
 import logging
 
-from ai_sag.doc_parser.image.models import ImageOCRResult
+from .models import ImageOCRResult
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ OCR 引擎模块 — 文字识别（含位置）
 - recognize_with_positions() → 带位置文字块 list[OCRTextBlock]  （结构化/表格场景）
 
 用法:
-    from ai_sag.doc_parser.image.ocr import get_ocr_engine
+    from .ocr import get_ocr_engine
 
     engine = get_ocr_engine("paddleocr")
     engine.recognize(img_array)                    # → ["行1", "行2"]
@@ -26,8 +26,8 @@ from typing import Literal
 
 import numpy as np
 
-from ai_sag.doc_parser.image.processor import ImageProcessor
-from ai_sag.doc_parser.image.config import (
+from .processor import ImageProcessor
+from .config import (
     OCR_FONT_NAME,
     OCR_FONT_MIN_SIZE,
     OCR_CONFIDENCE_THRESHOLD,

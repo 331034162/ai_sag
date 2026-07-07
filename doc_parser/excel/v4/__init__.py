@@ -9,11 +9,11 @@ V4 版本的 Excel 解析能力（原始单元格级 JSON 输出）：
 - 便捷函数: parse_excel, parse_directory
 """
 
-from ai_sag.doc_parser.excel.v4.models import SheetRaw, ExcelRaw
-from ai_sag.doc_parser.excel.v4.config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
-from ai_sag.doc_parser.excel.v4.parser import ExcelParser
-from ai_sag.doc_parser.excel.v4.formatter import print_summary, save_json
-from ai_sag.doc_parser.excel.v4.parser import parse_excel, parse_directory
+from .models import SheetRaw, ExcelRaw
+from .config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+from .parser import ExcelParser
+from .formatter import print_summary, save_json
+from .parser import parse_excel, parse_directory
 
 __all__ = [
     "SheetRaw",

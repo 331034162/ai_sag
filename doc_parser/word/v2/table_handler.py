@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 
-from ai_sag.doc_parser.word.v2.config import ENABLE_SIGNING_DETECTION, SIGNING_KEYWORDS
+from .config import ENABLE_SIGNING_DETECTION, SIGNING_KEYWORDS
 
 logger = logging.getLogger(__name__)
 

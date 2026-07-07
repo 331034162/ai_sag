@@ -14,18 +14,18 @@ PDF 文档解析子包
 默认使用 V2 版本（含表格检测），也可通过 doc_parser.pdf.v1 显式使用 V1 版本。
 """
 
-from ai_sag.doc_parser.pdf.v2.models import ImageInfo, PageContent, PDFTable, PDFResult
-from ai_sag.doc_parser.pdf.v2.detector import PDFTypeDetector
-from ai_sag.doc_parser.pdf.v2.image_processor import WatermarkHandler, StampDetector, ImagePreprocessor, ImageProcessor
-from ai_sag.doc_parser.image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
-from ai_sag.doc_parser.pdf.v2.parser import PDFParser
-from ai_sag.doc_parser.pdf.v2.formatter import (
+from .v2.models import ImageInfo, PageContent, PDFTable, PDFResult
+from .v2.detector import PDFTypeDetector
+from .v2.image_processor import WatermarkHandler, StampDetector, ImagePreprocessor, ImageProcessor
+from ..image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
+from .v2.parser import PDFParser
+from .v2.formatter import (
     print_summary,
     print_page_text,
     save_markdown,
     save_text,
 )
-from ai_sag.doc_parser.pdf.v2.parser import parse_pdf, parse_directory
+from .v2.parser import parse_pdf, parse_directory
 
 __all__ = [
     "ImageInfo",

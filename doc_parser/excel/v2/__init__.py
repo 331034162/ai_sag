@@ -9,11 +9,11 @@ V2 版本的 Excel 解析能力（增强版）：
 - 便捷函数: parse_excel, parse_directory
 """
 
-from ai_sag.doc_parser.excel.v2.models import SheetContent, ExcelResult
-from ai_sag.doc_parser.excel.v2.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
-from ai_sag.doc_parser.excel.v2.parser import ExcelParser
-from ai_sag.doc_parser.excel.v2.formatter import print_summary, save_markdown, save_text
-from ai_sag.doc_parser.excel.v2.parser import parse_excel, parse_directory
+from .models import SheetContent, ExcelResult
+from .config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
+from .parser import ExcelParser
+from .formatter import print_summary, save_markdown, save_text
+from .parser import parse_excel, parse_directory
 
 __all__ = [
     "SheetContent",

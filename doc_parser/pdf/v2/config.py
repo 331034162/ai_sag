@@ -12,7 +12,7 @@ import logging
 # ============================================================
 # 从 image 包重新导出共享配置（向后兼容）
 # ============================================================
-from ai_sag.doc_parser.image.config import (  # noqa: F401
+from ...image.config import (  # noqa: F401
     OCR_CONFIDENCE_THRESHOLD,
     OCR_PAGE_DPI,
     OCR_PYMUPDF_DPI,

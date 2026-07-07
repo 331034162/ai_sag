@@ -17,8 +17,8 @@ from typing import Optional, Any, List, Dict, Tuple
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-from ai_sag.doc_parser.excel.v2.config import ENABLE_SIGNING_DETECTION, SIGNING_KEYWORDS
-from ai_sag.doc_parser.excel.v2.models import SheetContent
+from .config import ENABLE_SIGNING_DETECTION, SIGNING_KEYWORDS
+from .models import SheetContent
 
 
 # ============================================================

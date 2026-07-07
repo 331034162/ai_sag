@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ai_sag.doc_parser.image.table.models import TableCell, TableRecognitionResult
+from .models import TableCell, TableRecognitionResult
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ class PaddleTableRecognizer(TableRecognizer):
     ) -> list[TableCell]:
         """用 cell_box_list 坐标 + table_ocr_pred OCR 文字重新填充表格"""
         try:
-            from ai_sag.doc_parser.image.config import OCR_CONFIDENCE_THRESHOLD
+            from ..config import OCR_CONFIDENCE_THRESHOLD
 
             cell_bboxes = []
             for box in cell_box_list:
@@ -624,7 +624,7 @@ class PositionTableRecognizer(TableRecognizer):
         Returns:
             TableRecognitionResult 列表
         """
-        from ai_sag.doc_parser.image.table.layout import detect_tables_from_blocks
+        from .layout import detect_tables_from_blocks
 
         blocks = ocr_blocks
 
@@ -657,7 +657,7 @@ class PositionTableRecognizer(TableRecognizer):
 
         # 没有 OCR 引擎，尝试默认获取
         try:
-            from ai_sag.doc_parser.image.ocr import get_ocr_engine
+            from ..ocr import get_ocr_engine
             engine = get_ocr_engine("rapidocr")
             return engine.recognize_with_positions(
                 image_array, preprocess=True,

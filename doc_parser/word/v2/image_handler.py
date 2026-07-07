@@ -17,10 +17,10 @@ from typing import Optional
 
 import numpy as np
 
-from ai_sag.doc_parser.word.v2.models import WordImage
-from ai_sag.doc_parser.word.v2.config import IMAGE_MIN_AREA_FOR_OCR, DEFAULT_OCR_BACKEND
-from ai_sag.doc_parser.image.ocr import OCRBackend, get_ocr_engine
-from ai_sag.doc_parser.image.processor import ImageProcessor
+from .models import WordImage
+from .config import IMAGE_MIN_AREA_FOR_OCR, DEFAULT_OCR_BACKEND
+from ...image.ocr import OCRBackend, get_ocr_engine
+from ...image.processor import ImageProcessor
 
 logger = logging.getLogger(__name__)
 

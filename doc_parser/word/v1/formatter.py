@@ -6,7 +6,7 @@
 import os
 import logging
 
-from ai_sag.doc_parser.word.v1.models import WordResult
+from .models import WordResult
 
 logger = logging.getLogger(__name__)
 

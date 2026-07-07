@@ -15,13 +15,13 @@ import numpy as np
 import cv2
 import pymupdf4llm
 
-from ai_sag.doc_parser.pdf.v1.models import ImageInfo, PageContent, PDFResult
-from ai_sag.doc_parser.pdf.v1.detector import PDFTypeDetector
-from ai_sag.doc_parser.pdf.v1.image_processor import ImageProcessor
-from ai_sag.doc_parser.pdf.v1.formatter import save_markdown, save_text
-from ai_sag.doc_parser.image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
-from ai_sag.doc_parser.image.parser import ocr_for_pymupdf
-from ai_sag.doc_parser.pdf.v1.config import OCR_PAGE_DPI, OCR_PYMUPDF_DPI, setup_logging
+from .models import ImageInfo, PageContent, PDFResult
+from .detector import PDFTypeDetector
+from .image_processor import ImageProcessor
+from .formatter import save_markdown, save_text
+from ...image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
+from ...image.parser import ocr_for_pymupdf
+from .config import OCR_PAGE_DPI, OCR_PYMUPDF_DPI, setup_logging
 
 # 初始化日志（模块级别，确保整个包可用）
 setup_logging()

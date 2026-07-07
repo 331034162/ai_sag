@@ -9,19 +9,19 @@
 3. PositionTableRecognizer — 基于 OCR 块位置聚类（推荐）
 
 对外统一导出：
-    from ai_sag.doc_parser.image.table import recognize_tables_in_image, TableRecognitionResult, ...
-    from ai_sag.doc_parser.image.table import ENABLE_TABLE_RECOGNITION, TABLE_RECOGNITION_BACKEND, ...
+    from . import recognize_tables_in_image, TableRecognitionResult, ...
+    from . import ENABLE_TABLE_RECOGNITION, TABLE_RECOGNITION_BACKEND, ...
 """
 
-from ai_sag.doc_parser.image.table.config import (  # noqa: F401
+from .config import (  # noqa: F401
     ENABLE_TABLE_RECOGNITION,
     TABLE_RECOGNITION_BACKEND,
 )
-from ai_sag.doc_parser.image.table.models import (  # noqa: F401
+from .models import (  # noqa: F401
     TableCell,
     TableRecognitionResult,
 )
-from ai_sag.doc_parser.image.table.recognizer import (  # noqa: F401
+from .recognizer import (  # noqa: F401
     TableRecognizer,
     PaddleTableRecognizer,
     VisualTableRecognizer,
@@ -29,11 +29,11 @@ from ai_sag.doc_parser.image.table.recognizer import (  # noqa: F401
     get_table_recognizer,
     recognize_tables_in_image,
 )
-from ai_sag.doc_parser.image.table.formatter import (  # noqa: F401
+from .formatter import (  # noqa: F401
     table_to_markdown,
     tables_to_text,
 )
-from ai_sag.doc_parser.image.table.layout import (  # noqa: F401
+from .layout import (  # noqa: F401
     sort_blocks_by_reading_order,
     reconstruct_structured_text,
     detect_tables_from_blocks,

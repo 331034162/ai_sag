@@ -6,7 +6,7 @@ Excel V5 二维数组 JSON 解析器
 数据行保留原始类型（int/float），公式同时记录文本和计算值。
 
 用法：
-    from ai_sag.doc_parser.excel.v5 import parse_excel
+    from . import parse_excel
 
     result = parse_excel("/path/to/file.xlsx")
     print(result.to_json())
@@ -18,9 +18,9 @@ from typing import Optional
 
 import openpyxl
 
-from ai_sag.doc_parser.excel.v5.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN
-from ai_sag.doc_parser.excel.v5.models import Section, SheetData, ExcelData
-from ai_sag.doc_parser.excel.v5.converter import sheet_to_data
+from .config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN
+from .models import Section, SheetData, ExcelData
+from .converter import sheet_to_data
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class ExcelParser:
         if path.suffix.lower() not in (".xlsx", ".xls"):
             raise ValueError(f"不支持的文件格式: {path.suffix}")
 
-        from ai_sag.doc_parser.excel.v5 import config as cfg
+        from . import config as cfg
         original_signing = cfg.ENABLE_SIGNING_DETECTION
         original_hidden = cfg.INCLUDE_HIDDEN
         cfg.ENABLE_SIGNING_DETECTION = self.signing_detection
@@ -102,7 +102,7 @@ class ExcelParser:
             )
 
             if self.output_dir:
-                from ai_sag.doc_parser.excel.v5.formatter import save_json
+                from .formatter import save_json
                 out_dir = Path(self.output_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 save_json(result, str(out_dir / f"{path.stem}.json"))

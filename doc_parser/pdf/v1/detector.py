@@ -6,7 +6,7 @@ PDF 类型检测器
 
 import fitz  # pymupdf
 
-from ai_sag.doc_parser.pdf.v1.config import IMAGE_ONLY_RATIO
+from .config import IMAGE_ONLY_RATIO
 
 
 class PDFTypeDetector:

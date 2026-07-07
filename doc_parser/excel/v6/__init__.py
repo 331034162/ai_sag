@@ -9,11 +9,11 @@ V6 版本的 Excel 解析能力（CSV 文本输出）：
 - 便捷函数: parse_excel, parse_directory
 """
 
-from ai_sag.doc_parser.excel.v6.models import SheetCSV, ExcelCSV
-from ai_sag.doc_parser.excel.v6.config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
-from ai_sag.doc_parser.excel.v6.parser import ExcelParser
-from ai_sag.doc_parser.excel.v6.formatter import print_summary, save_csv_text
-from ai_sag.doc_parser.excel.v6.parser import parse_excel, parse_directory
+from .models import SheetCSV, ExcelCSV
+from .config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+from .parser import ExcelParser
+from .formatter import print_summary, save_csv_text
+from .parser import parse_excel, parse_directory
 
 __all__ = [
     "SheetCSV",

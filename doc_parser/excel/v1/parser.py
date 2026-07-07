@@ -6,13 +6,13 @@ Excel 解析器
 
 用法：
     # 便捷函数
-    from ai_sag.doc_parser.excel import parse_excel, parse_directory
+    from .. import parse_excel, parse_directory
 
     result = parse_excel("/path/to/file.xlsx")
     results = parse_directory("/path/to/dir")
 
     # 类实例
-    from ai_sag.doc_parser.excel import ExcelParser
+    from .. import ExcelParser
 
     parser = ExcelParser(output_dir="./output", signing_detection=True)
     result = parser.parse("/path/to/file.xlsx")
@@ -25,9 +25,9 @@ from typing import Optional, Union
 
 import openpyxl
 
-from ai_sag.doc_parser.excel.v1.config import ENABLE_SIGNING_DETECTION
-from ai_sag.doc_parser.excel.v1.models import SheetContent, ExcelResult
-from ai_sag.doc_parser.excel.v1.converter import sheet_to_markdown
+from .config import ENABLE_SIGNING_DETECTION
+from .models import SheetContent, ExcelResult
+from .converter import sheet_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class ExcelParser:
             raise ValueError(f"不支持的文件格式: {path.suffix}，仅支持 .xlsx / .xls")
 
         # 动态设置签章检测开关
-        from ai_sag.doc_parser.excel.v1 import config as cfg
+        from . import config as cfg
         original_signing = cfg.ENABLE_SIGNING_DETECTION
         cfg.ENABLE_SIGNING_DETECTION = self.signing_detection
 
@@ -131,7 +131,7 @@ class ExcelParser:
 
             # 保存到磁盘
             if self.output_dir:
-                from ai_sag.doc_parser.excel.v1.formatter import save_markdown, save_text
+                from .formatter import save_markdown, save_text
                 out_dir = Path(self.output_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 stem = path.stem

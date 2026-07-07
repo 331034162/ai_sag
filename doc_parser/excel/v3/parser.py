@@ -6,13 +6,13 @@ Excel V3 JSON 解析器
 
 用法：
     # 便捷函数
-    from ai_sag.doc_parser.excel.v3 import parse_excel, parse_directory
+    from . import parse_excel, parse_directory
 
     result = parse_excel("/path/to/file.xlsx")
     print(result.to_json())
 
     # 类实例
-    from ai_sag.doc_parser.excel.v3 import ExcelParser
+    from . import ExcelParser
 
     parser = ExcelParser(output_dir="./output", signing_detection=True)
     result = parser.parse("/path/to/file.xlsx")
@@ -25,9 +25,9 @@ from typing import Optional
 
 import openpyxl
 
-from ai_sag.doc_parser.excel.v3.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN
-from ai_sag.doc_parser.excel.v3.models import SheetJSON, ExcelJSON
-from ai_sag.doc_parser.excel.v3.converter import sheet_to_json
+from .config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN
+from .models import SheetJSON, ExcelJSON
+from .converter import sheet_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class ExcelParser:
             raise ValueError(f"不支持的文件格式: {path.suffix}，仅支持 .xlsx / .xls")
 
         # 动态设置配置
-        from ai_sag.doc_parser.excel.v3 import config as cfg
+        from . import config as cfg
         original_signing = cfg.ENABLE_SIGNING_DETECTION
         original_hidden = cfg.INCLUDE_HIDDEN
         cfg.ENABLE_SIGNING_DETECTION = self.signing_detection
@@ -121,7 +121,7 @@ class ExcelParser:
 
             # 保存到磁盘
             if self.output_dir:
-                from ai_sag.doc_parser.excel.v3.formatter import save_json
+                from .formatter import save_json
                 out_dir = Path(self.output_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 stem = path.stem

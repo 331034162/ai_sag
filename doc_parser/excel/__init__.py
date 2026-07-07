@@ -9,11 +9,11 @@ Excel 文档解析子包
 - 便捷函数: parse_excel, parse_directory
 """
 
-from ai_sag.doc_parser.excel.v2.models import SheetContent, ExcelResult
-from ai_sag.doc_parser.excel.v2.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
-from ai_sag.doc_parser.excel.v2.parser import ExcelParser
-from ai_sag.doc_parser.excel.v2.formatter import print_summary, save_markdown, save_text
-from ai_sag.doc_parser.excel.v2.parser import parse_excel, parse_directory
+from .v2.models import SheetContent, ExcelResult
+from .v2.config import ENABLE_SIGNING_DETECTION, INCLUDE_HIDDEN, SIGNING_KEYWORDS
+from .v2.parser import ExcelParser
+from .v2.formatter import print_summary, save_markdown, save_text
+from .v2.parser import parse_excel, parse_directory
 
 __all__ = [
     "SheetContent",

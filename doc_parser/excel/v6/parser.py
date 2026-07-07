@@ -5,7 +5,7 @@ Excel V6 CSV 格式解析器
 提供 ExcelParser 类和便捷函数，将 Excel 文件解析为 CSV 文本。
 
 用法：
-    from ai_sag.doc_parser.excel.v6 import parse_excel
+    from . import parse_excel
 
     result = parse_excel("/path/to/file.xlsx")
     print(result.to_csv_text())
@@ -17,9 +17,9 @@ from typing import Optional
 
 import openpyxl
 
-from ai_sag.doc_parser.excel.v6.config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
-from ai_sag.doc_parser.excel.v6.models import SheetCSV, ExcelCSV
-from ai_sag.doc_parser.excel.v6.converter import sheet_to_csv
+from .config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+from .models import SheetCSV, ExcelCSV
+from .converter import sheet_to_csv
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class ExcelParser:
             raise ValueError(f"不支持的文件格式: {path.suffix}，仅支持 .xlsx / .xls")
 
         # 动态设置配置
-        from ai_sag.doc_parser.excel.v6 import config as cfg
+        from . import config as cfg
         original_hidden = cfg.INCLUDE_HIDDEN
         original_empty = cfg.INCLUDE_EMPTY_CELLS
         cfg.INCLUDE_HIDDEN = self.include_hidden
@@ -95,7 +95,7 @@ class ExcelParser:
 
             # 保存到磁盘
             if self.output_dir:
-                from ai_sag.doc_parser.excel.v6.formatter import save_csv_text
+                from .formatter import save_csv_text
                 out_dir = Path(self.output_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 save_csv_text(result, str(out_dir / f"{path.stem}.csv"))

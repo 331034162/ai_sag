@@ -7,7 +7,7 @@ import os
 import json
 import logging
 
-from ai_sag.doc_parser.excel.v4.models import ExcelRaw
+from .models import ExcelRaw
 
 logger = logging.getLogger(__name__)
 

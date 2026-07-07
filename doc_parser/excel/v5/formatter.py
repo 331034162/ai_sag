@@ -7,7 +7,7 @@ import os
 import json
 import logging
 
-from ai_sag.doc_parser.excel.v5.models import ExcelData
+from .models import ExcelData
 
 logger = logging.getLogger(__name__)
 

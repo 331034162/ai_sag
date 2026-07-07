@@ -4,7 +4,7 @@
 将 TableRecognitionResult 转为 Markdown 等格式。
 """
 
-from ai_sag.doc_parser.image.table.models import TableRecognitionResult
+from .models import TableRecognitionResult
 
 
 def table_to_markdown(tbl: TableRecognitionResult) -> str:

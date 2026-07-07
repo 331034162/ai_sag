@@ -7,7 +7,7 @@
 此文件保留用于向后兼容，所有导出均从 image 包重新导出
 """
 
-from ai_sag.doc_parser.image.processor import (  # noqa: F401
+from ...image.processor import (  # noqa: F401
     WatermarkHandler,
     StampDetector,
     ImagePreprocessor,

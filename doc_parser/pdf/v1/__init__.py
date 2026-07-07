@@ -3,17 +3,17 @@ PDF 文档解析器 V1
 ================
 """
 
-from ai_sag.doc_parser.pdf.v1.models import ImageInfo, PageContent, PDFResult
-from ai_sag.doc_parser.pdf.v1.detector import PDFTypeDetector
-from ai_sag.doc_parser.pdf.v1.image_processor import (
+from .models import ImageInfo, PageContent, PDFResult
+from .detector import PDFTypeDetector
+from .image_processor import (
     WatermarkHandler,
     StampDetector,
     ImagePreprocessor,
     ImageProcessor,
 )
-from ai_sag.doc_parser.image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
-from ai_sag.doc_parser.pdf.v1.parser import PDFParser, parse_pdf, parse_directory
-from ai_sag.doc_parser.pdf.v1.formatter import (
+from ...image.ocr import OCRBackend, BaseOCREngine, get_ocr_engine
+from .parser import PDFParser, parse_pdf, parse_directory
+from .formatter import (
     print_summary,
     print_page_text,
     save_markdown,
