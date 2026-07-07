@@ -1,0 +1,28 @@
+"""
+Excel V6 CSV 格式解析子包
+=========================
+V6 版本的 Excel 解析能力（CSV 文本输出）：
+- 数据模型: SheetCSV, ExcelCSV
+- 配置: INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+- 核心解析: ExcelParser
+- 结果输出: print_summary, save_csv_text
+- 便捷函数: parse_excel, parse_directory
+"""
+
+from ai_sag.doc_parser.excel.v6.models import SheetCSV, ExcelCSV
+from ai_sag.doc_parser.excel.v6.config import INCLUDE_HIDDEN, INCLUDE_EMPTY_CELLS
+from ai_sag.doc_parser.excel.v6.parser import ExcelParser
+from ai_sag.doc_parser.excel.v6.formatter import print_summary, save_csv_text
+from ai_sag.doc_parser.excel.v6.parser import parse_excel, parse_directory
+
+__all__ = [
+    "SheetCSV",
+    "ExcelCSV",
+    "INCLUDE_HIDDEN",
+    "INCLUDE_EMPTY_CELLS",
+    "ExcelParser",
+    "parse_excel",
+    "parse_directory",
+    "print_summary",
+    "save_csv_text",
+]

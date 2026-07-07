@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ai_sag 知识库控制台</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #273449; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --primary: #3b82f6; --primary-hover: #2563eb;
+    --success: #22c55e; --danger: #ef4444; --warn: #f59e0b; --code-bg: #0b1220;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); line-height: 1.6; }
+  header { background: linear-gradient(90deg, #1e293b, #0f172a); padding: 14px 24px;
+           border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .api-tag { margin-left: auto; font-size: 12px; color: var(--muted);
+                    background: var(--panel2); padding: 4px 10px; border-radius: 4px; }
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; max-width: 1600px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .panel h2 .badge { font-size: 11px; background: var(--primary); color: #fff; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=search], textarea, select {
+    width: 100%; background: var(--code-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 80px; }
+  input[type=file] { font-size: 12px; color: var(--muted); }
+  button { background: var(--primary); color: #fff; border: none; border-radius: 4px;
+           padding: 8px 14px; font-size: 13px; cursor: pointer; transition: background .15s; }
+  button:hover { background: var(--primary-hover); }
+  button.ghost { background: var(--panel2); }
+  button.ghost:hover { background: var(--border); }
+  button.danger { background: var(--danger); }
+  button.danger:hover { background: #dc2626; }
+  button.small { padding: 4px 8px; font-size: 12px; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .doc-item { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+              padding: 10px 12px; margin-bottom: 8px; }
+  .doc-item .title { font-weight: 600; font-size: 14px; word-break: break-all; }
+  .doc-item .meta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .doc-item .desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .doc-item .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .snippet { background: var(--code-bg); padding: 6px 8px; border-radius: 4px; font-size: 12px;
+             margin-top: 6px; border-left: 2px solid var(--primary); word-break: break-all; }
+  .answer { background: var(--code-bg); padding: 12px; border-radius: 6px; border-left: 3px solid var(--success);
+            margin-bottom: 10px; white-space: pre-wrap; font-size: 14px; }
+  .trace { font-size: 11px; color: var(--muted); background: var(--code-bg); padding: 8px;
+           border-radius: 4px; margin-top: 8px; max-height: 160px; overflow: auto; word-break: break-all; }
+  .sections { margin-top: 10px; }
+  .section-item { background: var(--panel2); padding: 10px; border-radius: 6px; margin-bottom: 8px;
+                  border-left: 3px solid var(--warn); }
+  .section-item .rank { font-size: 11px; color: var(--warn); }
+  .section-item .head { font-size: 13px; font-weight: 600; margin: 2px 0; }
+  .section-item .body { font-size: 13px; white-space: pre-wrap; max-height: 200px; overflow: auto; }
+  .section-item .source-tag { display: inline-block; font-size: 11px; background: var(--border); color: var(--text); padding: 1px 6px; border-radius: 3px; margin-left: 6px; cursor: pointer; }
+  .section-item .source-tag:hover { background: var(--primary); }
+  .sources-box { margin-top: 10px; }
+  .sources-box .src-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .sources-box .src-item { font-size: 12px; color: var(--text); background: var(--panel2); padding: 4px 8px; border-radius: 4px; margin-bottom: 4px; border-left: 2px solid var(--primary); }
+  /* 片段引用 hover 浮层 */
+  .ref-tag { color: var(--primary); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+  .ref-popup { position: fixed; z-index: 10000; max-width: 640px; max-height: 60vh; overflow: auto;
+               background: var(--panel); border: 1px solid var(--primary); border-radius: 8px; padding: 14px;
+               box-shadow: 0 8px 24px rgba(0,0,0,0.4); font-size: 13px; display: none; }
+  .ref-popup .rp-head { font-weight: 600; color: var(--primary); margin-bottom: 6px; font-size: 12px; }
+  .ref-popup .rp-src { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .ref-popup .rp-body { word-break: break-word; line-height: 1.6; }
+  .ref-popup .rp-body h1, .ref-popup .rp-body h2, .ref-popup .rp-body h3 { color: var(--primary); margin: 8px 0 4px; }
+  .ref-popup .rp-body h1 { font-size: 15px; } .ref-popup .rp-body h2 { font-size: 14px; } .ref-popup .rp-body h3 { font-size: 13px; }
+  .ref-popup .rp-body p { margin: 4px 0; }
+  .ref-popup .rp-body ul, .ref-popup .rp-body ol { margin: 4px 0; padding-left: 20px; }
+  .ref-popup .rp-body li { margin: 2px 0; }
+  .ref-popup .rp-body code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .ref-popup .rp-body pre { background: var(--code-bg); padding: 8px; border-radius: 4px; overflow-x: auto; margin: 4px 0; }
+  .ref-popup .rp-body pre code { background: none; padding: 0; }
+  .ref-popup .rp-body table { border-collapse: collapse; margin: 4px 0; display: block; overflow-x: auto; }
+  .ref-popup .rp-body th, .ref-popup .rp-body td { border: 1px solid var(--border); padding: 4px 8px; }
+  .ref-popup .rp-body strong { color: var(--warn); }
+  .ref-popup .rp-body blockquote { border-left: 3px solid var(--primary); padding-left: 10px; color: var(--muted); margin: 4px 0; }
+  .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
+  .toast { position: fixed; top: 20px; right: 20px; padding: 12px 18px; border-radius: 6px;
+           color: #fff; font-size: 13px; z-index: 9999; opacity: 0; transition: opacity .3s; }
+  .toast.show { opacity: 1; } .toast.ok { background: var(--success); }
+  .toast.err { background: var(--danger); }
+  .loading { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted);
+             border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { font-size: 12px; color: var(--muted); }
+  .full { grid-column: 1 / -1; }
+  .kbd { font-family: monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  /* 多轮对话 */
+  .chat-box { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+              height: 380px; overflow-y: auto; padding: 12px; margin-bottom: 10px; }
+  .chat-msg { display: flex; margin-bottom: 10px; }
+  .chat-msg.user { justify-content: flex-end; }
+  .chat-msg.assistant { justify-content: flex-start; }
+  .chat-bubble { max-width: 80%; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+                 white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .chat-msg.user .chat-bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 2px; }
+  .chat-msg.assistant .chat-bubble { background: var(--panel2); color: var(--text); border-bottom-left-radius: 2px; border-left: 3px solid var(--success); }
+  .chat-meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .chat-input { display: flex; gap: 8px; }
+  .chat-input textarea { flex: 1; min-height: 44px; max-height: 120px; }
+  .chat-cursor::after { content: '▋'; animation: blink 1s step-start infinite; color: var(--primary); }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="toast" class="toast"></div>
+<div id="refPopup" class="ref-popup" onmouseenter="cancelHideRefPopup()" onmouseleave="hideRefPopup()"></div>
+<header>
+  <h1>ai_sag 知识库控制台</h1>
+  <span class="api-tag" id="apiTag">API: loading...</span>
+</header>
+
+<div class="layout">
+  <!-- 上传 -->
+  <div class="panel">
+    <h2>📤 文档上传 <span class="badge">文件</span></h2>
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls" />
+    <div class="hint">支持 .md / .txt / .docx / .pdf / .xlsx</div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="uploadFile()">上传入库</button>
+    </div>
+    <h2 style="margin-top:16px">📝 文档上传 <span class="badge">纯文本</span></h2>
+    <div>
+      <label>标题</label>
+      <input type="text" id="textTitle" placeholder="文档标题" />
+    </div>
+    <div style="margin-top:8px">
+      <label>内容</label>
+      <textarea id="textContent" rows="5" placeholder="粘贴文档正文..."></textarea>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button onclick="uploadText()">上传文本</button>
+    </div>
+  </div>
+
+  <!-- 文档列表 -->
+  <div class="panel">
+    <h2>📚 文档列表 <span class="badge" id="docCount">0</span></h2>
+    <div class="row">
+      <input type="search" id="listKeyword" placeholder="按文档名搜索..." style="flex:1" />
+      <button onclick="loadDocs()">搜索</button>
+      <button class="ghost" onclick="loadDocs()">刷新</button>
+    </div>
+    <div id="docList" style="max-height: 460px; overflow:auto">
+      <div class="empty">点击搜索/刷新加载文档</div>
+    </div>
+  </div>
+
+  <!-- 文档全文查询 -->
+  <div class="panel">
+    <h2>🔍 文档全文查询</h2>
+    <div class="row">
+      <input type="search" id="docSearchQ" placeholder="输入关键词，搜索文档原文..." style="flex:1" />
+      <button onclick="searchDocs()">查询</button>
+    </div>
+    <div class="hint">在文档正文里搜关键词，返回命中文档及上下文片段</div>
+    <div id="docSearchResult" style="max-height: 380px; overflow:auto; margin-top:10px"></div>
+  </div>
+
+  <!-- 文档详情 -->
+  <div class="panel">
+    <h2>📄 文档详情</h2>
+    <div class="row">
+      <input type="text" id="detailId" placeholder="输入 source_id" style="flex:1" />
+      <button onclick="loadDetail()">加载</button>
+    </div>
+    <div id="detailBox"></div>
+  </div>
+
+  <!-- 问答 -->
+  <div class="panel full">
+    <h2>💬 问答（SAG 多跳检索 + LLM 生成）</h2>
+    <div class="row">
+      <input type="search" id="askQuery" placeholder="输入问题，例如：数脉科技跟哪个公司签了合同？" style="flex:1" />
+      <button onclick="ask()">问答</button>
+      <button class="ghost" onclick="searchOnly()">仅检索(不生成)</button>
+    </div>
+    <div class="row">
+      <label style="margin:0"><input type="checkbox" id="useFilter" /> 按文档过滤</label>
+      <input type="text" id="askSourceIds" placeholder="source_id 逗号分隔（勾选过滤后生效）" style="flex:1" />
+      <label style="margin:0">融合模式</label>
+      <select id="askFusion" style="width:auto">
+        <option value="concat">concat（双路拼接，默认）</option>
+        <option value="supplement">supplement（事件为主+向量补充）</option>
+      </select>
+    </div>
+    <div id="askResult"></div>
+  </div>
+
+  <!-- 多轮对话 -->
+  <div class="panel full">
+    <h2>💬 多轮对话（带历史上下文） <span class="badge">chat</span></h2>
+    <div class="row">
+      <label style="margin:0"><input type="checkbox" id="chatUseStream" checked /> 流式输出</label>
+      <label style="margin:0"><input type="checkbox" id="chatUseFilter" /> 按文档过滤</label>
+      <input type="text" id="chatSourceIds" placeholder="source_id 逗号分隔（勾选过滤后生效）" style="flex:1" />
+      <label style="margin:0">融合模式</label>
+      <select id="chatFusion" style="width:auto">
+        <option value="concat">concat（默认）</option>
+        <option value="supplement">supplement</option>
+      </select>
+      <button class="ghost" onclick="clearChat()">清空对话</button>
+    </div>
+    <div class="chat-box" id="chatBox">
+      <div class="empty">开始与助手对话，历史上下文会自动带入下一轮</div>
+    </div>
+    <div class="chat-input">
+      <textarea id="chatInput" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="2"></textarea>
+      <button onclick="sendChat()">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "__API_BASE__";
+document.getElementById('apiTag').textContent = "API: " + API_BASE;
+
+// 全局 sections 缓存：流水号 → sections 数组，解决多轮对话溯源被覆盖的问题
+let _sectionsMap = {};
+
+// ===== 全局唯一流水号（溯源用，前端隐式生成） =====
+let _lastSerialNo = '';
+function generateSerialNo() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const dateStr = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
+  const timeStr = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `LX-${dateStr}-${timeStr}-${rand}`;
+}
+
+// 答案中的【片段N】替换为可 hover 的引用标签，serialNo 绑定当前轮次的 sections
+function renderAnswerWithRefs(text, serialNo) {
+  if (!text) return '';
+  const sects = _sectionsMap[serialNo] || [];
+  // 先转义 HTML，再替换【片段N】
+  let html = esc(text);
+  html = html.replace(/【片段(\d+)】/g, (match, num) => {
+    const idx = parseInt(num) - 1;
+    if (idx >= 0 && idx < sects.length) {
+      return `<span class="ref-tag" data-sn="${serialNo}" data-idx="${idx}" onmouseenter="showRefPopup(this, event)" onmouseleave="scheduleHideRefPopup()">${match}</span>`;
+    }
+    return match;
+  });
+  return html;
+}
+
+// 浮层延迟关闭句柄；用延迟机制给鼠标从标签移动到浮层留出过渡时间
+let _refPopupHideTimer = null;
+
+// 显示片段引用浮层（通过 DOM 元素的 data-sn / data-idx 查找对应 sections）
+function showRefPopup(el, event) {
+  // 取消任何挂起的关闭动作
+  if (_refPopupHideTimer) { clearTimeout(_refPopupHideTimer); _refPopupHideTimer = null; }
+  const serialNo = el.getAttribute('data-sn');
+  const idx = parseInt(el.getAttribute('data-idx'));
+  const sects = _sectionsMap[serialNo] || [];
+  const s = sects[idx];
+  if (!s) return;
+  const popup = document.getElementById('refPopup');
+  const srcName = s.source_name ? esc(s.source_name) : esc(s.source_id).slice(0, 8);
+  popup.innerHTML = `
+    <div class="rp-head">📄 片段${idx + 1} · 原文段落</div>
+    <div class="rp-src">来源文档: ${srcName}　|　章节: ${esc(s.heading)}</div>
+    <div class="rp-body">${window.marked ? marked.parse(s.content || '') : esc(s.content)}</div>`;
+  popup.style.display = 'block';
+  // 定位到鼠标附近
+  const x = event.clientX + 12;
+  const y = event.clientY + 12;
+  const maxX = window.innerWidth - popup.offsetWidth - 16;
+  const maxY = window.innerHeight - popup.offsetHeight - 16;
+  popup.style.left = Math.min(x, maxX) + 'px';
+  popup.style.top = Math.min(y, maxY) + 'px';
+}
+
+// 延迟关闭浮层（200ms 内若再次触发显示则取消关闭）
+function scheduleHideRefPopup() {
+  _refPopupHideTimer = setTimeout(() => {
+    document.getElementById('refPopup').style.display = 'none';
+    _refPopupHideTimer = null;
+  }, 200);
+}
+
+// 取消挂起的关闭动作（鼠标进入浮层时调用）
+function cancelHideRefPopup() {
+  if (_refPopupHideTimer) { clearTimeout(_refPopupHideTimer); _refPopupHideTimer = null; }
+}
+
+// 立即隐藏浮层
+function hideRefPopup() {
+  if (_refPopupHideTimer) { clearTimeout(_refPopupHideTimer); _refPopupHideTimer = null; }
+  document.getElementById('refPopup').style.display = 'none';
+}
+
+function toast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = "toast show " + (ok ? "ok" : "err");
+  setTimeout(() => t.className = "toast", 2500);
+}
+async function api(path, opts={}) {
+  const url = API_BASE + path;
+  // 隐式注入全局唯一流水号到请求头
+  const serialNo = generateSerialNo();
+  opts.headers = opts.headers || {};
+  if (opts.headers instanceof Headers) {
+    opts.headers.set('X-Trace-Id', serialNo);
+  } else {
+    opts.headers['X-Trace-Id'] = serialNo;
+  }
+  const r = await fetch(url, opts);
+  // 从响应头捕获后端返回的流水号（若后端未返回则使用前端生成的）
+  _lastSerialNo = r.headers.get('X-Trace-Id') || serialNo;
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { const j = await r.json(); detail = j.detail || JSON.stringify(j); } catch(e) {}
+    throw new Error(`${r.status}: ${detail}`);
+  }
+  return r.json();
+}
+function fmtDate(s){ return s ? s.replace('T',' ').slice(0,19) : '-'; }
+function esc(s){ return (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// ---------- 文档列表 ----------
+async function loadDocs() {
+  const kw = document.getElementById('listKeyword').value.trim();
+  const box = document.getElementById('docList');
+  box.innerHTML = '<div class="spinner"><span class="loading"></span> 加载中...</div>';
+  try {
+    const q = kw ? ('?keyword=' + encodeURIComponent(kw)) : '';
+    const data = await api('/api/documents' + q);
+    document.getElementById('docCount').textContent = data.total;
+    if (!data.items.length) { box.innerHTML = '<div class="empty">暂无文档</div>'; return; }
+    box.innerHTML = data.items.map(d => `
+      <div class="doc-item">
+        <div class="title">${esc(d.name)}</div>
+        <div class="meta"><span>ID: ${esc(d.id)}</span><span>创建: ${fmtDate(d.created_at)}</span></div>
+        <div class="desc">${esc(d.description)}</div>
+        <div class="actions">
+          <button class="small" onclick="loadDetailId('${d.id}')">详情</button>
+          <button class="small ghost" onclick="downloadDoc('${d.id}')">下载</button>
+          <button class="small danger" onclick="deleteDoc('${d.id}')">删除</button>
+        </div>
+      </div>`).join('');
+  } catch(e) { box.innerHTML = `<div class="empty" style="color:var(--danger)">${esc(e.message)}</div>`; }
+}
+function loadDetailId(id){ document.getElementById('detailId').value = id; loadDetail(); }
+
+// ---------- 上传文件 ----------
+async function uploadFile() {
+  const f = document.getElementById('fileInput').files[0];
+  if (!f) { toast('请选择文件', false); return; }
+  const fd = new FormData(); fd.append('file', f);
+  toast('上传中...');
+  try {
+    const data = await api('/api/documents', { method:'POST', body: fd });
+    toast(`上传成功 source_id=${data.source_id}`);
+    loadDocs();
+  } catch(e) { toast('上传失败: ' + e.message, false); }
+}
+
+// ---------- 上传文本 ----------
+async function uploadText() {
+  const title = document.getElementById('textTitle').value.trim();
+  const content = document.getElementById('textContent').value.trim();
+  if (!title || !content) { toast('标题和内容不能为空', false); return; }
+  toast('上传中...');
+  try {
+    const data = await api('/api/documents/text', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ title, content })
+    });
+    toast(`上传成功 source_id=${data.source_id}`);
+    document.getElementById('textTitle').value = '';
+    document.getElementById('textContent').value = '';
+    loadDocs();
+  } catch(e) { toast('上传失败: ' + e.message, false); }
+}
+
+// ---------- 文档全文查询 ----------
+async function searchDocs() {
+  const q = document.getElementById('docSearchQ').value.trim();
+  if (!q) { toast('请输入关键词', false); return; }
+  const box = document.getElementById('docSearchResult');
+  box.innerHTML = '<div class="spinner"><span class="loading"></span> 搜索中...</div>';
+  try {
+    const data = await api('/api/documents/search?q=' + encodeURIComponent(q));
+    if (!data.items.length) { box.innerHTML = '<div class="empty">未找到匹配文档</div>'; return; }
+    box.innerHTML = data.items.map(it => `
+      <div class="doc-item">
+        <div class="title">${esc(it.title)}</div>
+        <div class="meta"><span>ID: ${esc(it.source_id)}</span><span>来源: ${esc(it.source_name)}</span></div>
+        <div class="snippet">${esc(it.snippet)}</div>
+      </div>`).join('');
+  } catch(e) { box.innerHTML = `<div class="empty" style="color:var(--danger)">${esc(e.message)}</div>`; }
+}
+
+// ---------- 文档详情 ----------
+async function loadDetail() {
+  const id = document.getElementById('detailId').value.trim();
+  if (!id) { toast('请输入 source_id', false); return; }
+  const box = document.getElementById('detailBox');
+  box.innerHTML = '<div class="spinner"><span class="loading"></span> 加载中...</div>';
+  try {
+    const data = await api('/api/documents/' + encodeURIComponent(id));
+    const s = data.source, d = data.document || {}, st = data.stats || {};
+    box.innerHTML = `
+      <div class="doc-item">
+        <div class="title">${esc(s.name)}</div>
+        <div class="meta">
+          <span>ID: ${esc(s.id)}</span>
+          <span>切片: ${st.chunks||0}</span>
+          <span>事件: ${st.events||0}</span>
+          <span>创建: ${fmtDate(s.created_at)}</span>
+        </div>
+        <div class="desc">${esc(s.description)}</div>
+        ${d.title ? `<div class="desc">原文标题: ${esc(d.title)}</div>`:''}
+        <div class="actions">
+          <button class="small ghost" onclick="downloadDoc('${s.id}')">下载原文</button>
+          <button class="small danger" onclick="deleteDoc('${s.id}')">删除</button>
+        </div>
+      </div>
+      ${d.content ? `<div class="snippet" style="max-height:240px;overflow:auto">${esc(d.content)}</div>`:''}`;
+  } catch(e) { box.innerHTML = `<div class="empty" style="color:var(--danger)">${esc(e.message)}</div>`; }
+}
+
+// ---------- 下载 ----------
+function downloadDoc(id) {
+  window.open(API_BASE + '/api/documents/' + encodeURIComponent(id) + '/download', '_blank');
+}
+
+// ---------- 删除 ----------
+async function deleteDoc(id) {
+  if (!confirm('确认删除该文档？关联的事件/向量将一并清理。')) return;
+  try {
+    const data = await api('/api/documents/' + encodeURIComponent(id), { method:'DELETE' });
+    toast(`已删除（事件 ${data.deleted_events} 条）`);
+    loadDocs();
+  } catch(e) { toast('删除失败: ' + e.message, false); }
+}
+
+// ---------- 问答 / 检索 ----------
+function getSourceIds() {
+  const useFilter = document.getElementById('useFilter').checked;
+  const raw = document.getElementById('askSourceIds').value.trim();
+  if (!useFilter || !raw) return null;
+  return raw.split(',').map(s=>s.trim()).filter(Boolean);
+}
+async function ask() { await runAsk(true); }
+async function searchOnly() { await runAsk(false); }
+
+async function runAsk(withLLM) {
+  const query = document.getElementById('askQuery').value.trim();
+  if (!query) { toast('请输入问题', false); return; }
+  const fusion = document.getElementById('askFusion').value;
+  const source_ids = getSourceIds();
+  const body = { query, source_ids, fusion };
+  const path = withLLM ? '/api/ask' : '/api/search';
+  const box = document.getElementById('askResult');
+  box.innerHTML = `<div class="spinner"><span class="loading"></span> ${withLLM?'问答':'检索'}中...</div>`;
+  try {
+    const data = await api(path, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    let html = '';
+    // 缓存 sections 供 hover 溯源
+    _sectionsMap[_lastSerialNo] = data.sections || [];
+    if (withLLM && data.answer) {
+      html += `<div class="answer">${renderAnswerWithRefs(data.answer, _lastSerialNo)}</div>`;
+    }
+    if (data.sections && data.sections.length) {
+      html += `<div class="sections">`;
+      data.sections.forEach((s, i) => {
+        const srcName = s.source_name ? esc(s.source_name) : esc(s.source_id).slice(0,8);
+        html += `<div class="section-item">
+          <div class="rank">#${i + 1} · 分数 ${s.score.toFixed(3)} · 来源: <span class="source-tag" onclick="loadDetailId('${esc(s.source_id)}')">${srcName}</span></div>
+          <div class="head">${esc(s.heading)}</div>
+          <div class="body">${esc(s.content)}</div>
+        </div>`;
+      });
+      html += `</div>`;
+    } else if (!withLLM || !data.answer) {
+      html += `<div class="empty">无相关切片</div>`;
+    }
+    if (data.trace) {
+      const t = data.trace;
+      html += `<div class="trace">
+        <strong>流水号: ${esc(_lastSerialNo)}</strong><br>
+        查询实体: ${esc(t.query_entities.join(', '))}<br>
+        种子事件(${t.seed_event_ids.length}): ${esc(t.seed_event_ids.slice(0,8).join(', '))}<br>
+        扩展事件(${t.expanded_event_ids.length}): ${esc(t.expanded_event_ids.slice(0,8).join(', '))}<br>
+        重排后(${t.reranked_ids.length}): ${esc(t.reranked_ids.slice(0,8).join(', '))}<br>
+        ${t.fallback ? '⚠ 回退: '+esc(t.fallback) : ''}
+      </div>`;
+    }
+    box.innerHTML = html || '<div class="empty">无结果</div>';
+  } catch(e) { box.innerHTML = `<div class="empty" style="color:var(--danger)">${esc(e.message)}</div>`; }
+}
+
+// ---------- 多轮对话 ----------
+// 历史消息数组，格式 [{role:'user'|'assistant', content:'...'}]，每次发送时带上
+let chatHistory = [];
+
+// 清洗答案中的溯源引用标记，入历史前必须调用，避免 LLM 模仿这些文案
+function cleanSourceReferences(text) {
+  return text
+    .replace(/【片段\d+】/g, '')
+    .replace(/（已引用资料）/g, '')
+    .replace(/（见上文）/g, '')
+    .replace(/（见下图）/g, '')
+    .replace(/（如图）/g, '')
+    .replace(/（参见[^）]+）/g, '');
+}
+
+function getChatSourceIds() {
+  const useFilter = document.getElementById('chatUseFilter').checked;
+  const raw = document.getElementById('chatSourceIds').value.trim();
+  if (!useFilter || !raw) return null;
+  return raw.split(',').map(s=>s.trim()).filter(Boolean);
+}
+
+function renderChatEmpty() {
+  const box = document.getElementById('chatBox');
+  if (!chatHistory.length) {
+    box.innerHTML = '<div class="empty">开始与助手对话，历史上下文会自动带入下一轮</div>';
+  }
+}
+
+function appendBubble(role, content) {
+  const box = document.getElementById('chatBox');
+  // 清掉空状态占位
+  if (chatHistory.length === 0 && box.querySelector('.empty')) box.innerHTML = '';
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg ' + role;
+  msg.innerHTML = `<div class="chat-bubble">${esc(content)}</div>`;
+  box.appendChild(msg);
+  box.scrollTop = box.scrollHeight;
+}
+
+function appendBubbleWithSources(role, content, sourcesHtml) {
+  const box = document.getElementById('chatBox');
+  if (chatHistory.length === 0 && box.querySelector('.empty')) box.innerHTML = '';
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg ' + role;
+  // 答案内容经过 renderAnswerWithRefs 渲染，【片段N】变为可 hover 的引用标签
+  msg.innerHTML = `<div class="chat-bubble">${renderAnswerWithRefs(content, _lastSerialNo)}</div>${sourcesHtml}`;
+  box.appendChild(msg);
+  box.scrollTop = box.scrollHeight;
+}
+
+function appendLoading() {
+  const box = document.getElementById('chatBox');
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg assistant';
+  msg.id = 'chatLoading';
+  msg.innerHTML = '<div class="chat-bubble"><span class="loading"></span> 思考中...</div>';
+  box.appendChild(msg);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeLoading() {
+  const el = document.getElementById('chatLoading');
+  if (el) el.remove();
+}
+
+async function sendChat() {
+  if (document.getElementById('chatUseStream').checked) {
+    return sendChatStream();
+  }
+  const input = document.getElementById('chatInput');
+  const query = input.value.trim();
+  if (!query) { toast('请输入消息', false); return; }
+
+  // 展示用户消息（仅 UI）
+  appendBubble('user', query);
+  input.value = '';
+
+  const fusion = document.getElementById('chatFusion').value;
+  const source_ids = getChatSourceIds();
+  // 发送时 history 用当前已有历史（不含本轮 query），后端会用 history + query 拼接完整 messages
+  const body = { query, history: chatHistory, source_ids, fusion };
+
+  appendLoading();
+  try {
+    const data = await api('/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    removeLoading();
+    const answer = data.answer || '（无回复）';
+    // 缓存 sections 供 hover 溯源
+    _sectionsMap[_lastSerialNo] = data.sections || [];
+    // 不再在气泡下方渲染"答案来源"列表；用户 hover 正文中的【片段N】即可查看原文段落
+    appendBubbleWithSource('assistant', answer, '');
+    // 隐式附加流水号
+    const lastMsg = document.getElementById('chatBox').lastElementChild;
+    if (lastMsg && lastMsg.classList.contains('chat-msg') && lastMsg.classList.contains('assistant')) {
+      const traceLine = document.createElement('div');
+      traceLine.className = 'chat-meta';
+      traceLine.style.cssText = 'margin-top:4px;font-size:10px;color:var(--muted)';
+      traceLine.textContent = '流水号: ' + _lastSerialNo;
+      lastMsg.appendChild(traceLine);
+    }
+    // 成功后才把本轮 user + assistant 一起入历史，供下一轮使用
+    // 入历史前清洗所有溯源引用标记，避免 LLM 模仿导致后续轮次溯源丢失
+    chatHistory.push({ role: 'user', content: query });
+    chatHistory.push({ role: 'assistant', content: cleanSourceReferences(answer) });
+  } catch(e) {
+    removeLoading();
+    appendBubble('assistant', '❌ ' + e.message);
+    // 失败不入历史，用户可重新发送
+  }
+}
+
+// 流式对话：用 fetch + ReadableStream 解析 SSE 事件，逐 token 渲染到气泡
+async function sendChatStream() {
+  const input = document.getElementById('chatInput');
+  const query = input.value.trim();
+  if (!query) { toast('请输入消息', false); return; }
+
+  appendBubble('user', query);
+  input.value = '';
+
+  const fusion = document.getElementById('chatFusion').value;
+  const source_ids = getChatSourceIds();
+  const body = { query, history: chatHistory, source_ids, fusion };
+
+  // 创建一个带光标的 assistant 气泡，流式增量会写入这里
+  const box = document.getElementById('chatBox');
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg assistant';
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble chat-cursor';
+  bubble.innerHTML = '<span class="loading"></span> 检索中...';
+  msg.appendChild(bubble);
+  box.appendChild(msg);
+  box.scrollTop = box.scrollHeight;
+
+  // 隐式生成流水号
+  const serialNo = generateSerialNo();
+  let answer = '';
+  let aborted = false;
+  try {
+    const resp = await fetch(API_BASE + '/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Trace-Id': serialNo },
+      body: JSON.stringify(body),
+    });
+    _lastSerialNo = resp.headers.get('X-Trace-Id') || serialNo;
+    if (!resp.ok || !resp.body) {
+      let detail = resp.statusText;
+      try { const j = await resp.json(); detail = j.detail || JSON.stringify(j); } catch(e) {}
+      throw new Error(`${resp.status}: ${detail}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let metaGot = false;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE 帧以 \n\n 分隔，逐帧解析
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        const evt = parseSSE(frame);
+        if (!evt) continue;
+        if (evt.event === 'meta') {
+          metaGot = true;
+          bubble.classList.remove('chat-cursor');
+          bubble.innerHTML = '';  // 清掉"检索中..."
+          bubble.classList.add('chat-cursor');
+          // 缓存 sections 供 hover 溯源（不再渲染右侧"答案来源"列表）
+          _sectionsMap[_lastSerialNo] = (evt.data && evt.data.sections) || [];
+        } else if (evt.event === 'delta') {
+          if (!metaGot) { bubble.classList.remove('chat-cursor'); bubble.innerHTML = ''; metaGot = true; bubble.classList.add('chat-cursor'); }
+          const piece = (evt.data && evt.data.content) || '';
+          answer += piece;
+          bubble.innerHTML = esc(answer);
+          box.scrollTop = box.scrollHeight;
+        } else if (evt.event === 'done') {
+          bubble.classList.remove('chat-cursor');
+          if (!answer) { bubble.innerHTML = '（无回复）'; }
+          else { bubble.innerHTML = renderAnswerWithRefs(answer, _lastSerialNo); }
+          // 隐式附加流水号
+          const traceLine = document.createElement('div');
+          traceLine.className = 'chat-meta';
+          traceLine.style.cssText = 'margin-top:4px;font-size:10px;color:var(--muted)';
+          traceLine.textContent = '流水号: ' + _lastSerialNo;
+          msg.appendChild(traceLine);
+        } else if (evt.event === 'error') {
+          bubble.classList.remove('chat-cursor');
+          const m = (evt.data && evt.data.message) || '未知错误';
+          bubble.innerHTML = '❌ ' + esc(m);
+          aborted = true;
+        }
+      }
+    }
+  } catch(e) {
+    bubble.classList.remove('chat-cursor');
+    bubble.innerHTML = '❌ ' + esc(e.message);
+    aborted = true;
+  }
+  // 仅在正常完成时入历史，失败不入
+  if (!aborted && answer) {
+    // 入历史前清洗所有溯源引用标记，避免 LLM 模仿导致后续轮次溯源丢失
+    chatHistory.push({ role: 'user', content: query });
+    chatHistory.push({ role: 'assistant', content: cleanSourceReferences(answer) });
+  }
+}
+
+// 解析单个 SSE 帧 {event, data}
+function parseSSE(frame) {
+  let event = 'message', dataStr = '';
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+  }
+  let data = {};
+  if (dataStr) { try { data = JSON.parse(dataStr); } catch(e) { data = { raw: dataStr }; } }
+  return { event, data };
+}
+
+function clearChat() {
+  chatHistory = [];
+  renderChatEmpty();
+  toast('对话已清空');
+}
+
+// Enter 发送，Shift+Enter 换行
+document.getElementById('chatInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+
+// 初始加载
+loadDocs();
+</script>
+</body>
+</html>
