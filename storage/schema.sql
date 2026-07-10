@@ -2,14 +2,14 @@
 
 CREATE TABLE IF NOT EXISTS aisag_sources (
   id           VARCHAR(36) NOT NULL PRIMARY KEY,
-  name         VARCHAR(512) NOT NULL,
+  name         VARCHAR(128) NOT NULL,
   description  TEXT,
   md5          VARCHAR(32) NOT NULL DEFAULT '',
   metadata     JSON,
   archived_at  DATETIME NULL,
   created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_aisag_source_name_md5 (name(128), md5)
+  UNIQUE KEY uq_aisag_source_name_md5 (name, md5)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS aisag_documents (
