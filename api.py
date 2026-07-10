@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -218,17 +219,36 @@ def create_app() -> FastAPI:
         raw = await file.read()
         if not raw:
             raise HTTPException(400, "文件内容为空")
+
+        # 计算文件 MD5
+        file_md5 = hashlib.md5(raw).hexdigest()
+        filename = source_name or file.filename
+
+        # 检查重复：相同文件名 + 相同 MD5 的未归档文档已存在则拒绝
+        pipe = _ingest_pipeline()
+        existing_id = await pipe.db.check_duplicate(filename, file_md5)
+        if existing_id:
+            log.warning("重复上传拦截 file={} name={} md5={} existing_source_id={}",
+                        file.filename, filename, file_md5, existing_id)
+            raise HTTPException(409, f"文件已存在（文件名和内容均相同），source_id={existing_id}")
+
         with open(_make_upload_tmp_path(file.filename, _upload_tmp_dir()), "wb") as f:
             f.write(raw)
             tmp_path = f.name
         try:
-            pipe = _ingest_pipeline()
-            log.info("开始入库 file={} size={}B", file.filename, len(raw))
+            log.info("开始入库 file={} size={}B md5={}", file.filename, len(raw), file_md5)
             source_id = await pipe.ingest_file(tmp_path,
-                                                source_name=source_name or file.filename,
-                                                title=file.filename)
+                                                source_name=filename,
+                                                title=file.filename,
+                                                md5=file_md5)
             log.info("入库完成 source_id={} file={}", source_id, file.filename)
+        except HTTPException:
+            raise
         except Exception as e:
+            code = getattr(e, 'args', [None])[0]
+            if code == 1062:
+                log.warning("重复上传拦截 file={} name={} md5={}", file.filename, source_name, file_md5)
+                raise HTTPException(409, "文件已存在（文件名和内容均相同）")
             log.exception("入库失败 file={} err={}", file.filename, e)
             raise HTTPException(500, f"入库失败: {e}")
         finally:
@@ -243,10 +263,27 @@ def create_app() -> FastAPI:
     async def upload_text(req: TextUploadRequest):
         if not req.content.strip():
             raise HTTPException(400, "内容不能为空")
+
+        content_md5 = hashlib.md5(req.content.encode("utf-8")).hexdigest()
+        source_name = req.source_name or req.title
+
+        # 检查重复：相同名称 + 相同 MD5 的未归档文档已存在则拒绝
+        pipe = _ingest_pipeline()
+        existing_id = await pipe.db.check_duplicate(source_name, content_md5)
+        if existing_id:
+            log.warning("重复上传拦截（文本） title={} name={} md5={} existing_source_id={}",
+                        req.title, source_name, content_md5, existing_id)
+            raise HTTPException(409, f"相同内容的文本已存在，source_id={existing_id}")
+
         try:
-            pipe = _ingest_pipeline()
-            source_id = await pipe.ingest_text(req.title, req.content, source_name=req.source_name)
+            source_id = await pipe.ingest_text(req.title, req.content, source_name=source_name, md5=content_md5)
+        except HTTPException:
+            raise
         except Exception as e:
+            code = getattr(e, 'args', [None])[0]
+            if code == 1062:
+                log.warning("重复上传拦截（文本） title={} name={} md5={}", req.title, source_name, content_md5)
+                raise HTTPException(409, "相同内容的文本已存在")
             raise HTTPException(500, f"入库失败: {e}")
         return {"source_id": source_id, "title": req.title}
 
@@ -345,6 +382,9 @@ def create_app() -> FastAPI:
         raw = await file.read()
         if not raw:
             raise HTTPException(400, "文件内容为空")
+
+        file_md5 = hashlib.md5(raw).hexdigest()
+
         with open(_make_upload_tmp_path(file.filename, _upload_tmp_dir()), "wb") as f:
             f.write(raw)
             tmp_path = f.name
@@ -352,9 +392,14 @@ def create_app() -> FastAPI:
         old_source = await pipe.db.get_source(source_id)
         if not old_source:
             raise HTTPException(404, "文档不存在")
+
+        # 文件内容未变化时无需重建
+        if file_md5 and file_md5 == old_source.get("md5", ""):
+            return {"source_id": source_id, "rebuilt": False, "message": "文件内容未变化，跳过重建"}
+
         try:
             # 1. 先用新 source_id 入库（旧数据不受影响）
-            new_id = await pipe.ingest_file(tmp_path, source_name=old_source["name"])
+            new_id = await pipe.ingest_file(tmp_path, source_name=old_source["name"], md5=file_md5)
             # 2. 入库成功后删除旧数据（失败也不影响新数据）
             await pipe.delete_source(source_id)
         except Exception as e:

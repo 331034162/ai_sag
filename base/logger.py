@@ -48,7 +48,7 @@ TRACE_ID_CTX: ContextVar[str] = ContextVar("ai_sag_trace_id", default="-")
 _LOG_FORMAT_COLOR = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
-    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+    "<cyan>{extra[file_path]}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
     "<yellow>Trace-ID: {extra[trace_id]}</yellow> | "
     "<level>{message}</level>"
 )
@@ -57,7 +57,7 @@ _LOG_FORMAT_COLOR = (
 _LOG_FORMAT_PLAIN = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
     "{level: <8} | "
-    "{name}:{function}:{line} | "
+    "{extra[file_path]}:{function}:{line} | "
     "Trace-ID: {extra[trace_id]} | "
     "{message}"
 )
@@ -66,8 +66,9 @@ _initialized = False
 
 
 def _trace_id_filter(record):
-    """filter：动态从 ContextVar 注入 trace_id 到日志记录。"""
+    """filter：动态注入 trace_id 和文件绝对路径到日志记录。"""
     record["extra"]["trace_id"] = TRACE_ID_CTX.get()
+    record["extra"]["file_path"] = record["file"].path
     return True
 
 

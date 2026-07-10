@@ -61,23 +61,27 @@ class IngestPipeline:
 
     async def ingest_file(self, path: str, *, source_name: str | None = None,
                           source_id: str | None = None,
-                          title: str | None = None) -> str:
+                          title: str | None = None,
+                          md5: str = "") -> str:
         # heading 修复：透传 title，避免 chunk.heading 退化为临时文件名
         doc = self.loader.load(path, title=title)
-        return await self.ingest_document(doc, source_name=source_name, source_id=source_id)
+        return await self.ingest_document(doc, source_name=source_name, source_id=source_id, md5=md5)
 
     async def ingest_text(self, title: str, content: str, *, source_name: str | None = None,
-                          source_id: str | None = None) -> str:
+                          source_id: str | None = None,
+                          md5: str = "") -> str:
         doc = self.loader.load_text(title, content)
-        return await self.ingest_document(doc, source_name=source_name, source_id=source_id)
+        return await self.ingest_document(doc, source_name=source_name, source_id=source_id, md5=md5)
 
     async def ingest_document(self, doc: LoadedDocument, *, source_name: str | None = None,
-                              source_id: str | None = None) -> str:
+                              source_id: str | None = None,
+                              md5: str = "") -> str:
         async with self._ingest_semaphore:
-            return await self._ingest_document_impl(doc, source_name=source_name, source_id=source_id)
+            return await self._ingest_document_impl(doc, source_name=source_name, source_id=source_id, md5=md5)
 
     async def _ingest_document_impl(self, doc: LoadedDocument, *, source_name: str | None = None,
-                                    source_id: str | None = None) -> str:
+                                    source_id: str | None = None,
+                                    md5: str = "") -> str:
         source_id = source_id or str(uuid.uuid4())
         source_name = source_name or doc.title
         document_id = str(uuid.uuid4())
@@ -95,7 +99,7 @@ class IngestPipeline:
         log.info("事件抽取完成 事件数={} 实体总数={} 空实体事件数={}",
                  len(events), total_entities, fallback_count)
 
-        await self._persist(source_id, source_name, document_id, cleaned, chunks, events)
+        await self._persist(source_id, source_name, document_id, cleaned, chunks, events, md5=md5)
         log.info("入库完成 source_id={}", source_id)
         return source_id
 
@@ -139,7 +143,8 @@ class IngestPipeline:
 
     async def _persist(self, source_id: str, source_name: str, document_id: str,
                        doc: LoadedDocument, chunks: list[Chunk],
-                       extracted_events: list) -> None:
+                       extracted_events: list, *,
+                       md5: str = "") -> None:
         await self.db.ping()
 
         log.info("生成 chunk 向量 数量={}", len(chunks))
@@ -151,6 +156,7 @@ class IngestPipeline:
             source_id=source_id, source_name=source_name, file_type=doc.file_type,
             document_id=document_id, doc_title=doc.title, doc_content=doc.content,
             chunks=chunks, events=extracted_events,
+            md5=md5,
         )
         log.info("MySQL 写入完成 事件={} 去重实体={}", len(event_records), len(seen_entities))
 

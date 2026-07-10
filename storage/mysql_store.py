@@ -85,11 +85,45 @@ class MysqlStore:
     async def ensure_schema(self) -> None:
         sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         stmts = self._split_sql(sql)
-        async with self.transaction() as conn:
+        # 所有建表/改表均为 DDL，MySQL 会自动隐式提交，不应在显式事务中执行
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 for stmt in stmts:
                     if stmt.strip():
                         await cur.execute(stmt)
+                # 兼容旧表：添加 md5 列（列已存在则跳过，错误码 1060 = Duplicate column name）
+                try:
+                    await cur.execute(
+                        "ALTER TABLE aisag_sources ADD COLUMN md5 VARCHAR(32) NOT NULL DEFAULT ''")
+                    log.info("ensure_schema: 已添加 md5 列")
+                except Exception as e:
+                    if getattr(e, 'args', [None])[0] == 1060:
+                        log.info("ensure_schema: md5 列已存在，跳过")
+                    else:
+                        raise
+                # 兼容旧表：删除旧普通索引
+                try:
+                    await cur.execute(
+                        "ALTER TABLE aisag_sources DROP INDEX idx_aisag_source_name_md5")
+                    log.info("ensure_schema: 已删除旧索引 idx_aisag_source_name_md5")
+                except Exception:
+                    pass
+                # 兼容旧表：创建唯一索引（索引已存在则跳过，错误码 1061 = Duplicate key name）
+                try:
+                    await cur.execute(
+                        "ALTER TABLE aisag_sources ADD UNIQUE KEY uq_aisag_source_name_md5 (name(128), md5)")
+                    log.info("ensure_schema: 已创建唯一索引 uq_aisag_source_name_md5")
+                except Exception as e:
+                    code = getattr(e, 'args', [None])[0]
+                    if code == 1061:
+                        log.info("ensure_schema: 唯一索引已存在，跳过")
+                    elif code == 1062:
+                        log.warning(
+                            "ensure_schema: 表中存在重复的 (name, md5) 数据，无法创建唯一索引。"
+                            "请先手动清理重复行后重试。")
+                    else:
+                        raise
 
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
@@ -130,15 +164,26 @@ class MysqlStore:
         rows = await self._fetchall("SELECT id FROM aisag_entities")
         return [str(r["id"]) for r in rows]
 
+    async def check_duplicate(self, name: str, md5: str) -> str | None:
+        """检查是否存在同名且同 MD5 的未归档文档。
+
+        返回已存在的 source_id，若不存在则返回 None。
+        """
+        r = await self._fetchone(
+            "SELECT id FROM aisag_sources WHERE name=%s AND md5=%s AND md5 != '' AND archived_at IS NULL",
+            (name, md5),
+        )
+        return str(r["id"]) if r else None
+
     # ---------------- 写入 ----------------
 
     async def upsert_source(self, source_id: str, name: str, description: str = "",
-                            metadata: dict | None = None) -> None:
+                            md5: str = "", metadata: dict | None = None) -> None:
         await self._execute(
-            "INSERT INTO aisag_sources (id, name, description, metadata) VALUES (%s,%s,%s,%s) "
+            "INSERT INTO aisag_sources (id, name, description, md5, metadata) VALUES (%s,%s,%s,%s,%s) "
             "ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), "
-            "metadata=VALUES(metadata)",
-            (source_id, name, description, json.dumps(metadata or {}, ensure_ascii=False)),
+            "md5=VALUES(md5), metadata=VALUES(metadata)",
+            (source_id, name, description, md5, json.dumps(metadata or {}, ensure_ascii=False)),
         )
 
     async def insert_document(self, doc_id: str, source_id: str, title: str,
@@ -200,7 +245,8 @@ class MysqlStore:
 
     async def persist_source(self, source_id: str, source_name: str, file_type: str,
                              document_id: str, doc_title: str, doc_content: str,
-                             chunks: list[Chunk], events: list) -> tuple[list, dict[tuple[str, str], str]]:
+                             chunks: list[Chunk], events: list, *,
+                             md5: str = "") -> tuple[list, dict[tuple[str, str], str]]:
         # 长度校验：chunks 和 events 必须严格 1:1（P0 修复）
         if len(chunks) != len(events):
             raise ValueError(
@@ -212,10 +258,8 @@ class MysqlStore:
         async with self.transaction() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO aisag_sources (id, name, description, metadata) VALUES (%s,%s,%s,%s) "
-                    "ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), "
-                    "metadata=VALUES(metadata)",
-                    (source_id, source_name, f"file_type={file_type}",
+                    "INSERT INTO aisag_sources (id, name, description, md5, metadata) VALUES (%s,%s,%s,%s,%s)",
+                    (source_id, source_name, f"file_type={file_type}", md5,
                      json.dumps({"vector_synced": False}, ensure_ascii=False)),
                 )
                 await cur.execute(
@@ -528,7 +572,7 @@ class MysqlStore:
             where.append("name LIKE %s")
             params.append(f"%{keyword}%")
         where_clause = (" WHERE " + " AND ".join(where)) if where else ""
-        sql = (f"SELECT id, name, description, created_at, updated_at, archived_at "
+        sql = (f"SELECT id, name, description, md5, created_at, updated_at, archived_at "
                f"FROM aisag_sources{where_clause} ORDER BY created_at DESC LIMIT %s OFFSET %s")
         params.extend([limit, offset])
         rows = await self._fetchall(sql, params)
@@ -536,7 +580,7 @@ class MysqlStore:
 
     async def get_source(self, source_id: str) -> dict | None:
         r = await self._fetchone(
-            "SELECT id, name, description, created_at, updated_at, archived_at "
+            "SELECT id, name, description, md5, created_at, updated_at, archived_at "
             "FROM aisag_sources WHERE id=%s", (source_id,))
         return self._row_to_source(r) if r else None
 
@@ -599,6 +643,7 @@ class MysqlStore:
     def _row_to_source(r) -> dict:
         return {
             "id": str(r["id"]), "name": r["name"], "description": r.get("description") or "",
+            "md5": r.get("md5") or "",
             "created_at": str(r["created_at"]) if r.get("created_at") else None,
             "updated_at": str(r["updated_at"]) if r.get("updated_at") else None,
             "archived_at": str(r["archived_at"]) if r.get("archived_at") else None,
