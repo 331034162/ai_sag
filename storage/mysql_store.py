@@ -181,8 +181,8 @@ class MysqlStore:
                             md5: str = "", metadata: dict | None = None) -> None:
         await self._execute(
             "INSERT INTO aisag_sources (id, name, description, md5, metadata) VALUES (%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), "
-            "md5=VALUES(md5), metadata=VALUES(metadata)",
+            "AS new_src ON DUPLICATE KEY UPDATE name=new_src.name, description=new_src.description, "
+            "md5=new_src.md5, metadata=new_src.metadata",
             (source_id, name, description, md5, json.dumps(metadata or {}, ensure_ascii=False)),
         )
 
@@ -222,8 +222,9 @@ class MysqlStore:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                    "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-                    "name=VALUES(name)",
+                    "VALUES (%s,%s,%s,%s,%s) "
+                    "AS new_ent ON DUPLICATE KEY UPDATE "
+                    "name=new_ent.name",
                     (eid, entity.type, entity.name, norm, entity.description),
                 )
                 await cur.execute(
@@ -311,8 +312,9 @@ class MysqlStore:
                             eid = str(uuid.uuid4())
                             await cur.execute(
                                 "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                                "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-                                "name=VALUES(name)",
+                                "VALUES (%s,%s,%s,%s,%s) "
+                                "AS new_ent ON DUPLICATE KEY UPDATE "
+                                "name=new_ent.name",
                                 (eid, e.type, e.name, norm, e.description),
                             )
                             await cur.execute(
@@ -325,7 +327,7 @@ class MysqlStore:
                         await cur.execute(
                             "INSERT IGNORE INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
                             "VALUES (%s,%s,%s,%s,%s)",
-                            (str(uuid.uuid4()), event.id, eid, 1.0, e.role),
+                            (str(uuid.uuid4()), event.id, eid, e.weight, e.role),
                         )
 
         return event_records, seen_entities
@@ -338,50 +340,63 @@ class MysqlStore:
             return []
         ph_e = ",".join(["%s"] * len(entity_ids))
         params: list = list(entity_ids)
-        where = [f"ee.entity_id IN ({ph_e})", "e.deleted_at IS NULL"]
         if source_ids:
             ph_s = ",".join(["%s"] * len(source_ids))
-            where.append(f"e.source_id IN ({ph_s})")
             params.extend(source_ids)
-        if exclude:
-            ph_x = ",".join(["%s"] * len(exclude))
-            where.append(f"ee.event_id NOT IN ({ph_x})")
-            params.extend(exclude)
-        sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
-               f"JOIN aisag_events e ON e.id = ee.event_id WHERE " + " AND ".join(where))
+            sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
+                   f"WHERE ee.entity_id IN ({ph_e}) "
+                   f"AND EXISTS (SELECT 1 FROM aisag_events e "
+                   f"            WHERE e.id = ee.event_id AND e.source_id IN ({ph_s}))")
+        else:
+            sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
+                   f"WHERE ee.entity_id IN ({ph_e})")
         rows = await self._fetchall(sql, params)
-        return [r["event_id"] for r in rows]
+        event_ids = [r["event_id"] for r in rows]
+        if exclude:
+            exclude_set = set(exclude)
+            event_ids = [eid for eid in event_ids if eid not in exclude_set]
+        return event_ids
 
     async def search_entities_by_name(self, names: list[str], source_ids: list[str] | None) -> list[Entity]:
         if not names:
             return []
-        ph = ",".join(["%s"] * len(names))
-        params: list = list(names)
-        where = [f"en.normalized_name IN ({ph})", "ev.deleted_at IS NULL"]
+        # 入库时实体名经 _normalize 处理（去空格+小写），查询前需一致化
+        normalized = [self._normalize(n) for n in names]
+        ph = ",".join(["%s"] * len(normalized))
         if source_ids:
             ph_s = ",".join(["%s"] * len(source_ids))
-            where.append(f"ev.source_id IN ({ph_s})")
-            params.extend(source_ids)
-        sql = (f"SELECT DISTINCT en.id, en.entity_type, en.name, en.normalized_name, en.description "
-               f"FROM aisag_entities en "
-               f"JOIN aisag_event_entities ee ON ee.entity_id = en.id "
-               f"JOIN aisag_events ev ON ev.id = ee.event_id WHERE " + " AND ".join(where))
-        rows = await self._fetchall(sql, params)
-        return [self._row_to_entity(r) for r in rows]
+            params = list(normalized) + list(source_ids)
+            sql = (f"SELECT en.id, en.entity_type, en.name, en.normalized_name, en.description "
+                   f"FROM aisag_entities en "
+                   f"WHERE en.normalized_name IN ({ph}) "
+                   f"AND EXISTS ("
+                   f"SELECT 1 FROM aisag_event_entities ee "
+                   f"JOIN aisag_events ev ON ev.id = ee.event_id "
+                   f"WHERE ee.entity_id = en.id AND ev.source_id IN ({ph_s})"
+                   f")")
+            rows = await self._fetchall(sql, params)
+            return [self._row_to_entity(r) for r in rows]
+        else:
+            sql = (f"SELECT id, entity_type, name, normalized_name, description "
+                   f"FROM aisag_entities en "
+                   f"WHERE en.normalized_name IN ({ph}) "
+                   f"AND EXISTS (SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = en.id)")
+            rows = await self._fetchall(sql, list(normalized))
+            return [self._row_to_entity(r) for r in rows]
 
     async def filter_entity_ids_by_sources(self, entity_ids: list[str],
                                            source_ids: list[str] | None) -> list[str]:
         if not entity_ids:
             return []
+        if not source_ids:
+            return list(entity_ids)
         ph = ",".join(["%s"] * len(entity_ids))
-        params: list = list(entity_ids)
-        where = [f"ee.entity_id IN ({ph})", "e.deleted_at IS NULL"]
-        if source_ids:
-            ph_s = ",".join(["%s"] * len(source_ids))
-            where.append(f"e.source_id IN ({ph_s})")
-            params.extend(source_ids)
+        ph_s = ",".join(["%s"] * len(source_ids))
+        params = list(entity_ids) + list(source_ids)
         sql = (f"SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
-               f"JOIN aisag_events e ON e.id = ee.event_id WHERE " + " AND ".join(where))
+               f"WHERE ee.entity_id IN ({ph}) "
+               f"AND EXISTS (SELECT 1 FROM aisag_events e "
+               f"            WHERE e.id = ee.event_id AND e.source_id IN ({ph_s}))")
         rows = await self._fetchall(sql, params)
         return [r["entity_id"] for r in rows]
 
@@ -390,7 +405,7 @@ class MysqlStore:
         if not event_ids:
             return []
         ph = ",".join(["%s"] * len(event_ids))
-        where = [f"id IN ({ph})", "deleted_at IS NULL"]
+        where = [f"id IN ({ph})"]
         params: list = list(event_ids)
         if source_ids:
             ph_s = ",".join(["%s"] * len(source_ids))
@@ -401,7 +416,8 @@ class MysqlStore:
         rows = await self._fetchall(sql, params)
         row_map = {r["id"]: r for r in rows}
         ordered = [row_map[eid] for eid in event_ids if eid in row_map]
-        roles_map = await self._entity_roles_of_events(event_ids)
+        matched_ids = [r["id"] for r in ordered]
+        roles_map = await self._entity_roles_of_events(matched_ids) if matched_ids else {}
         result = []
         for r in ordered:
             e = self._row_to_event(r)
@@ -635,7 +651,7 @@ class MysqlStore:
 
     async def count_events_by_source(self, source_id: str) -> int:
         r = await self._fetchone(
-            "SELECT COUNT(*) AS c FROM aisag_events WHERE source_id=%s AND deleted_at IS NULL",
+            "SELECT COUNT(*) AS c FROM aisag_events WHERE source_id=%s",
             (source_id,))
         return int(r["c"]) if r else 0
 

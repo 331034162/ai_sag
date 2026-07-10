@@ -49,6 +49,7 @@ class ExtractedEntity:
     name: str
     description: str = ""   # 实体固有属性（如"互联网银行"），不随事件变化
     role: str = ""          # 实体在该事件中的角色（如"贷款方"/"担保方"）
+    weight: float = 1.0     # 实体在当前事件中的重要性/关联度，0.1-1.0，默认1.0
 
 
 @dataclass

@@ -32,6 +32,7 @@ class _Entity(BaseModel):
     name: str
     description: str = ""   # 实体固有属性
     role: str = ""           # 在该事件中的角色
+    weight: float = 1.0      # 实体在当前事件中的关联度，0.1-1.0
 
 
 class _Event(BaseModel):
@@ -125,5 +126,6 @@ class EventExtractor:
         return ExtractedEvent(
             title=ev.title, summary=ev.summary, content=ev.content,
             entities=[ExtractedEntity(type=e.type, name=e.name,
-                                     description=e.description, role=e.role) for e in ev.entities],
+                                     description=e.description, role=e.role,
+                                     weight=e.weight) for e in ev.entities],
         )

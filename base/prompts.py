@@ -196,7 +196,9 @@ def extract_system_prompt(summary_max_chars: int = 500) -> str:
   · group: 受益方/被约束方
   · topic/work/label: 主题/被引作品/分类标签
   示例错误：role="逾期提货每日违约金占合同含税总价的比例"（这是描述不是角色）
-  示例正确：role="计算依据" 或 role="被引用指标" """
+  示例正确：role="计算依据" 或 role="被引用指标"
+- 每个 entity.weight 为该实体在当前事件中的重要性/关联度，浮点数 0.1-1.0：
+  1.0=核心实体（事件主语/主要对象），0.7-0.9=重要参与方，0.4-0.6=次要关联，0.1-0.3=背景/上下文实体。"""
 
 
 # 入库抽取的 user prompt 模板（用于 PromptTemplate）
