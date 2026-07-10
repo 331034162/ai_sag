@@ -314,16 +314,36 @@ copy .env.example .env  # Windows
 
 ### 5. 启动
 
-需要两个终端分别启动 API 和 Web UI：
+需要两个终端分别启动 API 和 Web UI。**注意必须在仓库根目录（`ai_sag_git/`）执行，不是在 `ai_sag/` 子目录！**
+
+#### 5.1 启动 API 服务（终端 1）
 
 ```bash
-# 确保在仓库根目录（ai_sag_git/），不是 ai_sag/ 子目录！
-
-# 终端 1：API 服务（端口 8777）
+# 1. 进入仓库根目录
 cd your-repo
+
+# 2. 激活 conda 环境
+conda activate ai_sag
+
+# 3. 启动（默认监听 0.0.0.0:8777，首次启动自动建表）
 python -m ai_sag.api
 
-# 终端 2：Web UI（端口 8080）
+# 或指定端口 + 热重载（开发时推荐）
+python -m ai_sag.api --host 0.0.0.0 --port 8777 --reload
+```
+
+启动成功后访问 **http://localhost:8777/docs** 查看 Swagger API 文档。
+
+#### 5.2 启动 Web UI（终端 2）
+
+```bash
+# 1. 进入仓库根目录
+cd your-repo
+
+# 2. 激活 conda 环境
+conda activate ai_sag
+
+# 3. 启动 Web UI（默认 0.0.0.0:8080）
 python -m ai_sag.web --port 8080 --api http://localhost:8777
 ```
 
