@@ -36,7 +36,7 @@ class _Entity(BaseModel):
 
 
 class _Event(BaseModel):
-    title: str
+    title: str = Field(description="不超过100字的独立事件标题，能脱离上下文表达核心主题，不可用'概述''前言'等泛词或照抄小节标题")
     summary: str
     content: str
     entities: list[_Entity] = Field(default_factory=list)
@@ -47,10 +47,12 @@ _EXTRACT_TEMPLATE = PromptTemplate(EXTRACT_TEMPLATE)
 
 class EventExtractor:
     def __init__(self, llm: LLM, *, max_retries: int = 2,
-                 summary_max_chars: int = 500) -> None:
+                 summary_max_chars: int = 500,
+                 title_max_chars: int = 100) -> None:
         self.llm = llm
         self._max_retries = max_retries
         self._summary_max_chars = summary_max_chars
+        self._title_max_chars = title_max_chars
 
     def extract(self, chunk: Chunk, doc_title: str,
                 previous_context: str = "") -> ExtractedEvent:
@@ -66,7 +68,7 @@ class EventExtractor:
                 result = self.llm.structured_predict(
                     _Event,
                     _EXTRACT_TEMPLATE,
-                    system_prompt=extract_system_prompt(self._summary_max_chars),
+                    system_prompt=extract_system_prompt(self._summary_max_chars, self._title_max_chars),
                     doc_title=doc_title,
                     heading=chunk.heading,
                     previous_context=previous_context or "（无，这是文档的开头）",

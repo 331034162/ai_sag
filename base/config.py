@@ -213,6 +213,9 @@ class IngestConfig:
     # 耗尽后抛 ExtractionError 终止入库，不会写入低质量 fallback 数据。
     extract_max_retries: int = field(
         default_factory=lambda: int(_env("AISAG_EXTRACT_MAX_RETRIES", "2")))
+    # 事件标题（title）的字数上限：通过 system prompt 传递给 LLM，约束其输出长度。
+    title_max_chars: int = field(
+        default_factory=lambda: int(_env("AISAG_TITLE_MAX_CHARS", "100")))
     # 事件摘要（summary）的字数上限：通过 system prompt 传递给 LLM，约束其输出长度。
     summary_max_chars: int = field(
         default_factory=lambda: int(_env("AISAG_SUMMARY_MAX_CHARS", "500")))

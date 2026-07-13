@@ -160,10 +160,11 @@ def query_extract_system_prompt() -> str:
 QUERY_EXTRACT_USER_PROMPT = "查询：{query}\n请返回实体名列表。"
 
 
-def extract_system_prompt(summary_max_chars: int = 500) -> str:
+def extract_system_prompt(summary_max_chars: int = 500, title_max_chars: int = 100) -> str:
     """入库抽取的 system prompt（事件原则 + 11 类实体定义 + 命名规范）。
 
     summary_max_chars：事件摘要的字数上限，通过 prompt 传递给 LLM 约束输出长度。
+    title_max_chars：事件标题的字数上限，通过 prompt 传递给 LLM 约束输出长度。
     """
     return f"""你是专业的内容抽取器。从给定文本片段中抽取一个融合事件及其关联实体。
 
@@ -173,6 +174,7 @@ def extract_system_prompt(summary_max_chars: int = 500) -> str:
 - 忠实性：不杜撰、不遗漏核心事实、不改主语、不长段照抄原文。
 - content 应精炼保留原文核心语义，优先使用原文关键句和精确数值，仅合并冗余、去除套话，不添加原文没有的事实，不替换专业术语。
 - 若片段为表格/清单（如产品目录、条款列表），content 应保留关键条目和精确数值，而非仅概括。
+- title 应为不超过{title_max_chars}字的独立标题，能脱离上下文表达事件核心主题（如"X公司向Y银行申请授信获批"而非"概述""前言"或照抄小节标题），用于向量检索。
 - summary 应为不超过{summary_max_chars}字的压缩摘要，用于快速判断事件相关性。
 - 事件承载完整语义，不拆成多个独立三元组，避免语义碎片化。
 - 若提供了【前文摘要】，请利用它消解当前片段中的代词（他/她/它/该/其）、省略主语和指代（如"该公司""上述协议"），确保抽取的实体名完整具体。

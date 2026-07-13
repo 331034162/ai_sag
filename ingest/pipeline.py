@@ -38,6 +38,7 @@ class IngestPipeline:
             self.llm,
             max_retries=self.cfg.ingest.extract_max_retries,
             summary_max_chars=self.cfg.ingest.summary_max_chars,
+            title_max_chars=self.cfg.ingest.title_max_chars,
         )
         self.db = MysqlStore(
             host=self.cfg.mysql.host, port=self.cfg.mysql.port,
