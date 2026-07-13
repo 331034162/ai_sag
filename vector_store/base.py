@@ -10,7 +10,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Literal
 
-Collection = Literal["chunks", "event_titles", "event_contents", "entities"]
+Collection = Literal["chunks", "event_titles", "event_contents", "event_summaries", "entities"]
 
 
 class BaseVectorStore(ABC):
@@ -119,6 +119,13 @@ class BaseVectorStore(ABC):
             self.add("event_contents", [i[0] for i in items], [i[1] for i in items],
                      [i[2] for i in items], metas)
 
+    def add_event_summaries(self, items: list[tuple[str, str, list[float]]],
+                            source_id: str | None = None) -> None:
+        if items:
+            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            self.add("event_summaries", [i[0] for i in items], [i[1] for i in items],
+                     [i[2] for i in items], metas)
+
     def add_entities(self, items: list[tuple[str, str, list[float]]]) -> None:
         if items:
             self.add("entities", [i[0] for i in items], [i[1] for i in items], [i[2] for i in items])
@@ -134,6 +141,10 @@ class BaseVectorStore(ABC):
     def query_event_contents(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
                              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
         return self.query("event_contents", qe, top_k, similarity_threshold, source_ids)
+
+    def query_event_summaries(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
+                              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("event_summaries", qe, top_k, similarity_threshold, source_ids)
 
     def query_entities(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
                        source_ids: list[str] | None = None) -> list[tuple[str, float]]:
@@ -162,6 +173,13 @@ class BaseVectorStore(ABC):
             await self.aadd("event_contents", [i[0] for i in items], [i[1] for i in items],
                             [i[2] for i in items], metas)
 
+    async def aadd_event_summaries(self, items: list[tuple[str, str, list[float]]],
+                                   source_id: str | None = None) -> None:
+        if items:
+            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            await self.aadd("event_summaries", [i[0] for i in items], [i[1] for i in items],
+                            [i[2] for i in items], metas)
+
     async def aadd_entities(self, items: list[tuple[str, str, list[float]]]) -> None:
         if items:
             await self.aadd("entities", [i[0] for i in items], [i[1] for i in items],
@@ -178,6 +196,10 @@ class BaseVectorStore(ABC):
     async def aquery_event_contents(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
                                     source_ids: list[str] | None = None) -> list[tuple[str, float]]:
         return await self.aquery("event_contents", qe, top_k, similarity_threshold, source_ids)
+
+    async def aquery_event_summaries(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
+                                     source_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("event_summaries", qe, top_k, similarity_threshold, source_ids)
 
     async def aquery_entities(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
                               source_ids: list[str] | None = None) -> list[tuple[str, float]]:

@@ -187,6 +187,9 @@ class SearchConfig:
     max_sections: int = field(default_factory=lambda: int(_env("AISAG_MAX_SECTIONS", "5")))
     fusion: str = field(default_factory=lambda: _env("AISAG_FUSION", "concat").lower())
 
+    # 种子事件向量召回策略：title（标题向量）/ summary（摘要向量）/ mixed（两者并发合并）
+    seed_recall: str = field(default_factory=lambda: _env("AISAG_SEED_RECALL", "mixed").lower())
+
     # 查询重写时保留的最大对话轮数（每轮含 user+assistant）
     rewrite_max_rounds: int = field(
         default_factory=lambda: int(_env("AISAG_REWRITE_MAX_ROUNDS", "5")))
@@ -219,6 +222,9 @@ class IngestConfig:
     # 事件摘要（summary）的字数上限：通过 system prompt 传递给 LLM，约束其输出长度。
     summary_max_chars: int = field(
         default_factory=lambda: int(_env("AISAG_SUMMARY_MAX_CHARS", "500")))
+    # 是否对事件摘要（summary）生成向量入库（默认开启，后续可用于种子事件召回）
+    embed_summary: bool = field(
+        default_factory=lambda: _env("AISAG_EMBED_SUMMARY", "true").lower() == "true")
 
 
 @dataclass

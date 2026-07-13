@@ -180,6 +180,14 @@ class IngestPipeline:
                 await self.vectors.aadd_event_contents(
                     [(e.id, e.content, emb) for e, emb in zip(event_records, content_embs)],
                     source_id=source_id)
+            if self.cfg.ingest.embed_summary:
+                summary_texts = [e.summary for e in event_records]
+                if summary_texts:
+                    log.info("生成事件摘要向量 数量={}", len(summary_texts))
+                    summary_embs = await self.embedder.aembed_texts(summary_texts)
+                    await self.vectors.aadd_event_summaries(
+                        [(e.id, e.summary, emb) for e, emb in zip(event_records, summary_embs)],
+                        source_id=source_id)
             if seen_entities:
                 name_lookup: dict[tuple[str, str], str] = {}
                 for ev in extracted_events:

@@ -17,7 +17,7 @@ class ChromaVectorStoreBackend(BaseVectorStore):
     def __init__(self, cfg: Config) -> None:
         self._client = chromadb.PersistentClient(path=cfg.vector_store.chroma_path)
         self._stores: dict[Collection, ChromaVectorStore] = {}
-        for name in ("chunks", "event_titles", "event_contents", "entities"):
+        for name in ("chunks", "event_titles", "event_contents", "event_summaries", "entities"):
             collection = self._client.get_or_create_collection(name=name)
             self._stores[name] = ChromaVectorStore(chroma_collection=collection)
 
@@ -63,8 +63,14 @@ class ChromaVectorStoreBackend(BaseVectorStore):
             meta = unique_metas[i] if unique_metas else {}
             nodes.append(TextNode(id_=cid, text=text, embedding=emb, metadata=meta))
         
+        skipped_total = len(ids) - len(unique_ids) + len(unique_ids) - len(nodes)
         if nodes:
             self._store(name).add(nodes)
+            log.info("向量写入 collection={} 传入={} 跳过去重={} 实际写入={}",
+                     name, len(ids), skipped_total, len(nodes))
+        else:
+            log.info("向量写入 collection={} 传入={} 跳过去重={} 实际写入=0（全部已存在）",
+                     name, len(ids), skipped_total)
 
     def query(self, name: Collection, query_embedding: list[float], top_k: int,
               similarity_threshold: float = 0.0,
@@ -86,6 +92,9 @@ class ChromaVectorStoreBackend(BaseVectorStore):
             for node, sim in zip(result.nodes, result.similarities):
                 if sim >= similarity_threshold:
                     hits.append((node.node_id, float(sim)))
+        source_filter = (source_ids is not None and name != "entities")
+        log.debug("向量查询 collection={} top_k={} 阈值={} 来源过滤={} 结果数={}",
+                  name, top_k, similarity_threshold, source_filter, len(hits))
         return hits
 
     def delete_by_source(self, source_id: str) -> None:
@@ -94,7 +103,7 @@ class ChromaVectorStoreBackend(BaseVectorStore):
         注意：entities collection 不按 source_id 删（实体跨 source 共享，去重），
         孤儿实体通过 delete_entities_by_ids 单独清理。
         """
-        for name in ("chunks", "event_titles", "event_contents"):
+        for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
             try:
                 col = self._store(name)._collection
                 before = col.count()
@@ -121,7 +130,7 @@ class ChromaVectorStoreBackend(BaseVectorStore):
         """按 event_id 硬删除 event_titles / event_contents 向量。"""
         if not event_ids:
             return
-        for name in ("event_titles", "event_contents"):
+        for name in ("event_titles", "event_contents", "event_summaries"):
             try:
                 col = self._store(name)._collection
                 before = col.count()
