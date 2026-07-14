@@ -134,12 +134,13 @@ class QAEngine:
 
     @staticmethod
     def _build_context(result: SearchResult) -> str:
-        """构建上下文：每个片段带编号，LLM 引用片段编号时可直接对应。"""
+        """构建上下文：每个片段带编号和相关度分数，LLM 引用片段编号时可直接对应。"""
         return "\n\n".join(
             QA_SECTION_FORMAT.format(
                 i=i + 1,
                 source_name=s.source_name or s.source_id[:12],
                 heading=s.heading,
+                score=s.score,
                 content=s.content,
             )
             for i, s in enumerate(result.sections)

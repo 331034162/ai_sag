@@ -384,6 +384,19 @@ class MysqlStore:
             rows = await self._fetchall(sql, list(normalized))
             return [self._row_to_entity(r) for r in rows]
 
+    async def get_entity_degrees(self, entity_ids: list[str]) -> dict[str, int]:
+        """批量查实体被多少事件引用（度数），用于 BFS 边界实体的 IDF 评分。
+        度数高 = 高频枢纽实体（如"众邦银行"），扩展价值低。"""
+        if not entity_ids:
+            return {}
+        ph = ",".join(["%s"] * len(entity_ids))
+        sql = (f"SELECT entity_id, COUNT(*) AS degree "
+               f"FROM aisag_event_entities "
+               f"WHERE entity_id IN ({ph}) "
+               f"GROUP BY entity_id")
+        rows = await self._fetchall(sql, list(entity_ids))
+        return {r["entity_id"]: int(r["degree"]) for r in rows}
+
     async def filter_entity_ids_by_sources(self, entity_ids: list[str],
                                            source_ids: list[str] | None) -> list[str]:
         if not entity_ids:

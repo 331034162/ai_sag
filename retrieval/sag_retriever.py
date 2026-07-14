@@ -322,10 +322,15 @@ class SagRetriever:
             new_entities = [eid for eid in current_entity_ids if eid not in tracked_entities]
             if not new_entities:
                 break
-            # 论文 Section 4.4：entity frontier pruning budget=50，限制每跳边界实体数
+            # 论文 Section 4.4：entity frontier pruning budget=100，限制每跳边界实体数
             budget = self.cfg.search.entity_frontier_budget
             if len(new_entities) > budget:
-                new_entities = new_entities[:budget]
+                if self.cfg.search.entity_frontier_filter:
+                    # 方案1+3：综合评分截断（IDF + query相似度），抑制高频枢纽实体
+                    new_entities = await self._filter_frontier_entities(
+                        new_entities, query_vec, budget)
+                else:
+                    new_entities = new_entities[:budget]
             tracked_entities.update(new_entities)
             new_event_ids = await self.db.get_event_ids_by_entity_ids(
                 new_entities, source_ids, exclude=list(tracked_events))
@@ -355,6 +360,49 @@ class SagRetriever:
 
         log.info("BFS结束 总事件数={} (种子={})", len(tracked_events), len(seed_ids))
         return list(tracked_events)
+
+    async def _filter_frontier_entities(
+        self, entity_ids: list[str], query_vec: list[float], budget: int
+    ) -> list[str]:
+        """方案1+3：对 BFS 边界实体做综合评分截断，抑制高频枢纽实体桥接噪声。
+
+        综合分 = (1-α)*IDF + α*query相似度
+          - IDF（方案1）：1/(1+degree)，度数越高分越低，抑制"众邦银行"等枢纽
+          - query相似度（方案3）：实体向量与 query 向量的余弦相似度，保留与问题语义相关的实体
+          - α = entity_frontier_query_weight，默认 0.6（偏向语义相关性）
+        两个分量均在 batch 内归一化到 [0,1] 再加权，取 top budget。
+        """
+        # 方案1：IDF 评分（度数倒数，本身在 [0,1]）
+        degrees = await self.db.get_entity_degrees(entity_ids)
+        idf_raw = {eid: 1.0 / (1.0 + degrees.get(eid, 0)) for eid in entity_ids}
+        # 方案3：query 相似度评分
+        entity_embs = await self.vectors.aget_embeddings("entities", entity_ids)
+        sim_pairs = self._cosine_scores(query_vec, entity_ids, entity_embs)
+        sim_raw = {eid: max(0.0, s) for eid, s in sim_pairs}  # 截断负相似度
+        # batch 内 min-max 归一化到 [0,1]，消除量纲差异
+        def _min_max(d: dict[str, float]) -> dict[str, float]:
+            if not d:
+                return d
+            lo, hi = min(d.values()), max(d.values())
+            rng = hi - lo
+            if rng < 1e-8:
+                return {k: 1.0 for k in d}  # 全相同则等权
+            return {k: (v - lo) / rng for k, v in d.items()}
+        idf_norm = _min_max(idf_raw)
+        sim_norm = _min_max(sim_raw)
+        # 综合分加权
+        alpha = self.cfg.search.entity_frontier_query_weight
+        combined = {eid: (1.0 - alpha) * idf_norm.get(eid, 0.0) + alpha * sim_norm.get(eid, 0.0)
+                    for eid in entity_ids}
+        # 按综合分降序取 top budget
+        ranked = sorted(entity_ids, key=lambda eid: combined[eid], reverse=True)
+        result = ranked[:budget]
+        log.info("边界实体筛选 候选={} 保留={} α={} 最佳分={:.4f} 度数范围={}-{}",
+                 len(entity_ids), len(result), alpha,
+                 combined[result[0]] if result else 0.0,
+                 min(degrees.values()) if degrees else 0,
+                 max(degrees.values()) if degrees else 0)
+        return result
 
     async def _coarse_rank(self, event_ids: list[str], query_vec: list[float],
                            source_ids: list[str] | None = None,

@@ -176,6 +176,14 @@ class SearchConfig:
     # BFS 扩展每跳边界实体数量上限（论文 Section 4.4：entity frontier pruning budget=100）
     entity_frontier_budget: int = field(
         default_factory=lambda: int(_env("AISAG_ENTITY_FRONTIER_BUDGET", "100")))
+    # 是否启用边界实体相关性筛选（方案1+3）：开启后 BFS 每跳对新增实体做综合评分截断，
+    # 综合分 = α*IDF(度数倒数) + (1-α)*query相似度，优先保留低频且与query语义相关的实体，
+    # 抑制"众邦银行"等高频枢纽实体桥接噪声事件。关闭则退回原随机截断。
+    entity_frontier_filter: bool = field(
+        default_factory=lambda: _env("AISAG_ENTITY_FRONTIER_FILTER", "true").lower() == "true")
+    # 综合评分中 query 相似度的权重 α（0~1，越大越偏向语义相关性，越小越偏向低频优先）
+    entity_frontier_query_weight: float = field(
+        default_factory=lambda: float(_env("AISAG_ENTITY_FRONTIER_QUERY_WEIGHT", "0.6")))
     # 粗排相似度阈值（设为 0 则关闭，对齐旧版仅排序截断）
     coarse_threshold: float = field(
         default_factory=lambda: float(_env("AISAG_COARSE_THRESHOLD", "0")))
