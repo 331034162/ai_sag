@@ -125,13 +125,13 @@
     <h2>📤 文档上传 <span class="badge">文件</span></h2>
     <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls" onchange="onFilePicked()" />
     <div class="hint">支持 .md / .txt / .docx / .pdf / .xlsx</div>
-    <div id="ocrOptions" style="margin-top:8px;display:none;border:1px solid var(--border,#ddd);border-radius:6px;padding:10px;background:var(--bg-alt,#fafafa)">
+    <div id="ocrOptions" style="margin-top:8px;display:none;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--panel2)">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
         <input type="checkbox" id="ocrImages" checked onchange="onOcrToggle()" />
         <span>图片 OCR 识别（提取内嵌图片文字，关闭可加快入库）</span>
       </label>
       <div id="ocrEngineRow" style="margin-top:8px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-        <span style="font-size:13px;color:var(--muted,#666)">OCR 引擎：</span>
+        <span style="font-size:13px;color:var(--muted)">OCR 引擎：</span>
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
           <input type="radio" name="ocrBackend" value="rapidocr" checked />
           <span>RapidOCR（速度快，默认）</span>
