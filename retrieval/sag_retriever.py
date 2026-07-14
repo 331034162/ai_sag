@@ -119,6 +119,18 @@ class SagRetriever:
         seed_vector_event_ids = [h[0] for h in path_b_hits]
         # Path B 种子召回已有分数，复用避免粗排阶段重复拉 embedding 重算
         path_b_scores: dict[str, float] = {h[0]: h[1] for h in path_b_hits}
+        # 观测日志：种子召回事件明细（标题+文件名+分数）
+        if seed_vector_event_ids:
+            seed_ev_map = {ev.id: ev for ev in
+                           await self.db.get_events_by_ids(seed_vector_event_ids, source_ids)}
+            seed_src_ids = {ev.source_id for ev in seed_ev_map.values()}
+            seed_src_names = await self.db.get_source_names_by_ids(list(seed_src_ids))
+            seed_brief = [{"score": round(path_b_scores.get(ev_id, 0.0), 4),
+                           "title": (seed_ev_map[ev_id].title or "")[:50],
+                           "source": seed_src_names.get(seed_ev_map[ev_id].source_id, "?")}
+                          for ev_id in seed_vector_event_ids if ev_id in seed_ev_map]
+            log.info("[观测] 种子召回事件 query={!r} 数量={} 明细={}",
+                     eff_query[:50], len(seed_vector_event_ids), seed_brief)
 
         # 2. 分支1：实体召回事件（依赖步骤1的实体抽取结果）
         entity_ids: list[str] = []
@@ -128,7 +140,21 @@ class SagRetriever:
 
         entity_event_ids = (await self.db.get_event_ids_by_entity_ids(entity_ids, source_ids)
                             if entity_ids else [])
-        log.info("实体→事件联表查询 实体数={} 命中事件数={}", len(entity_ids), len(entity_event_ids))
+        # 观测日志：实体召回事件明细 + 种子实体名
+        if entity_event_ids:
+            ent_ev_map = {ev.id: ev for ev in
+                          await self.db.get_events_by_ids(entity_event_ids, source_ids)}
+            ent_src_ids = {ev.source_id for ev in ent_ev_map.values()}
+            ent_src_names = await self.db.get_source_names_by_ids(list(ent_src_ids))
+            ent_names_map = await self.db.get_entity_names_by_ids(entity_ids)
+            ent_brief = [{"title": (ent_ev_map[ev_id].title or "")[:50],
+                          "source": ent_src_names.get(ent_ev_map[ev_id].source_id, "?")}
+                         for ev_id in entity_event_ids if ev_id in ent_ev_map]
+            log.info("[观测] 实体召回事件 实体名={} 命中事件数={} 明细={}",
+                     [ent_names_map.get(eid, "?") for eid in entity_ids],
+                     len(entity_event_ids), ent_brief)
+        else:
+            log.info("实体→事件联表查询 实体数={} 命中事件数={}", len(entity_ids), len(entity_event_ids))
 
         # 4. 合并事件池
         seed_ids = list(dict.fromkeys(entity_event_ids + seed_vector_event_ids))
@@ -335,6 +361,20 @@ class SagRetriever:
             new_event_ids = await self.db.get_event_ids_by_entity_ids(
                 new_entities, source_ids, exclude=list(tracked_events))
             log.info("BFS第{}跳 实体→事件联表 新增实体={} 新事件={}", hop, len(new_entities), len(new_event_ids))
+            # 观测日志：BFS 每跳新实体名 + 新事件明细（标题+文件名）
+            if new_event_ids:
+                bfs_ev_map = {ev.id: ev for ev in
+                              await self.db.get_events_by_ids(new_event_ids, source_ids)}
+                bfs_src_ids = {ev.source_id for ev in bfs_ev_map.values()}
+                bfs_src_names = await self.db.get_source_names_by_ids(list(bfs_src_ids))
+                bfs_ent_names = await self.db.get_entity_names_by_ids(new_entities)
+                bfs_brief = [{"title": (bfs_ev_map[ev_id].title or "")[:50],
+                              "source": bfs_src_names.get(bfs_ev_map[ev_id].source_id, "?")}
+                             for ev_id in new_event_ids if ev_id in bfs_ev_map]
+                log.info("[观测] BFS第{}跳 新实体名={} 新事件明细={}",
+                         hop,
+                         [bfs_ent_names.get(eid, "?") for eid in new_entities[:20]],
+                         bfs_brief)
             if not new_event_ids:
                 log.info("BFS第{}跳 无新事件，终止扩展", hop)
                 break
@@ -353,8 +393,17 @@ class SagRetriever:
                              hop, best_score, self.cfg.search.hop_relevance_threshold)
                     break  # 动态停止：新跳事件与查询已不相关
                 current_event_ids = [eid for eid, _ in scored[: self.cfg.search.hop_seed_topk]]
-                log.info("BFS第{}跳 hopllm重排 候选={} 取top{} 最佳分={:.4f}",
-                         hop, len(scored), len(current_event_ids), best_score)
+                # 观测日志：hopllm 保留的种子事件明细
+                hop_ev_map = {ev.id: ev for ev in
+                              await self.db.get_events_by_ids(current_event_ids, source_ids)}
+                hop_src_ids = {ev.source_id for ev in hop_ev_map.values()}
+                hop_src_names = await self.db.get_source_names_by_ids(list(hop_src_ids))
+                hop_brief = [{"score": round(dict(scored).get(ev_id, 0.0), 4),
+                              "title": (hop_ev_map[ev_id].title or "")[:50],
+                              "source": hop_src_names.get(hop_ev_map[ev_id].source_id, "?")}
+                             for ev_id in current_event_ids if ev_id in hop_ev_map]
+                log.info("BFS第{}跳 hopllm重排 候选={} 取top{} 最佳分={:.4f} 明细={}",
+                         hop, len(scored), len(current_event_ids), best_score, hop_brief)
             else:
                 current_event_ids = new_event_ids
 
@@ -437,6 +486,18 @@ class SagRetriever:
             scored = [(eid, s) for eid, s in scored if s >= threshold]
         scored = scored[: self.cfg.search.max_events]
         score_map = {eid: s for eid, s in scored}
+        # 观测日志：粗排结果明细（标题+文件名+分数）
+        if scored:
+            coarse_ev_map = {ev.id: ev for ev in
+                             await self.db.get_events_by_ids([eid for eid, _ in scored], source_ids)}
+            coarse_src_ids = {ev.source_id for ev in coarse_ev_map.values()}
+            coarse_src_names = await self.db.get_source_names_by_ids(list(coarse_src_ids))
+            coarse_brief = [{"score": round(s, 4),
+                             "title": (coarse_ev_map[eid].title or "")[:50],
+                             "source": coarse_src_names.get(coarse_ev_map[eid].source_id, "?")}
+                            for eid, s in scored if eid in coarse_ev_map]
+            log.info("[观测] 粗排结果 输入={} 保留={} top5明细={}",
+                     len(event_ids), len(scored), coarse_brief[:5])
         return [eid for eid, _ in scored], score_map
 
     @staticmethod
@@ -488,8 +549,16 @@ class SagRetriever:
             events = await self.db.get_events_by_ids(event_ids, source_ids)
         if not events:
             return []
+        # 观测日志：精排输入候选明细（标题+文件名）
+        rerank_src_ids = [ev.source_id for ev in events]
+        rerank_src_names = await self.db.get_source_names_by_ids(rerank_src_ids)
+        rerank_in_brief = [{"title": (ev.title or "")[:50],
+                            "source": rerank_src_names.get(ev.source_id, "?")}
+                           for ev in events]
+        log.info("[观测] 精排输入候选 数量={} 明细={}", len(events), rerank_in_brief)
         try:
-            selected = await self._llm_rerank(query, events, query_entity_ids=query_entity_ids or [])
+            selected = await self._llm_rerank(query, events, query_entity_ids=query_entity_ids or [],
+                                             coarse_scores=coarse_scores)
             result = selected[: self.cfg.search.rerank_top_k]
         except Exception:
             # Bug 2 修复：精排失败时按粗排分数降级排序，而非丢顺序
@@ -502,8 +571,11 @@ class SagRetriever:
             else:
                 result = event_ids[: self.cfg.search.rerank_top_k]
 
-        # 精排结果日志
+        # 精排结果日志（补充文件名）
         ev_map = {ev.id: ev for ev in events}
+        result_src_ids = [ev_map[eid].source_id for eid in result if eid in ev_map]
+        result_src_names = (await self.db.get_source_names_by_ids(result_src_ids)
+                            if result_src_ids else {})
         brief: list[dict] = []
         for eid in result:
             ev = ev_map.get(eid)
@@ -511,13 +583,15 @@ class SagRetriever:
                 summary_snip = (ev.summary or "")[:80]
                 brief.append({"title": (ev.title or "")[:60],
                               "summary": summary_snip + ("..." if len(ev.summary or "") > 80 else ""),
+                              "source": result_src_names.get(ev.source_id, "?"),
                               "coarse_score": round(coarse_scores.get(eid, 0.0), 4) if coarse_scores else None})
-        log.info("LLM精排结果 输入={} 输出={} 事件={}",
+        log.info("[观测] LLM精排结果 输入={} 输出={} 事件={}",
                  len(event_ids), len(result), brief)
         return result
 
     async def _llm_rerank(self, query: str, events: list, *,
-                          query_entity_ids: list[str]) -> list[str]:
+                          query_entity_ids: list[str],
+                          coarse_scores: dict[str, float] | None = None) -> list[str]:
         query_entity_set = set(query_entity_ids)
         entity_names = (await self.db.get_entity_names_by_ids(query_entity_ids)
                         if query_entity_ids else {})
@@ -525,8 +599,10 @@ class SagRetriever:
         lines = []
         for i, ev in enumerate(events):
             roles_text = self._format_entity_roles(ev, query_entity_set, entity_names)
+            score = coarse_scores.get(ev.id, 0.0) if coarse_scores else 0.0
             lines.append(RERANK_CANDIDATE_FORMAT.format(
                 i=i, event_id=ev.id, title=ev.title, summary=ev.summary,
+                score=f"{score:.3f}",
                 roles=roles_text,
             ))
         candidates = "\n\n".join(lines)

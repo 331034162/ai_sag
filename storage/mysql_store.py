@@ -124,6 +124,17 @@ class MysqlStore:
                             "请先手动清理重复行后重试。")
                     else:
                         raise
+                # 兼容旧表：为事件-实体关联表添加 created_at 列（列已存在则跳过，错误码 1060）
+                try:
+                    await cur.execute(
+                        "ALTER TABLE aisag_event_entities "
+                        "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
+                    log.info("ensure_schema: 已添加 aisag_event_entities.created_at 列")
+                except Exception as e:
+                    if getattr(e, 'args', [None])[0] == 1060:
+                        log.info("ensure_schema: aisag_event_entities.created_at 列已存在，跳过")
+                    else:
+                        raise
 
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
@@ -301,6 +312,8 @@ class MysqlStore:
                 )
 
                 # 实体去重 + 关联写入（需逐条查询去重，无法批量）
+                new_entity_count = 0
+                reused_entity_count = 0
                 for idx, (chunk, ev) in enumerate(zip(chunks, events)):
                     event = event_records[idx]
                     for e in ev.entities:
@@ -309,26 +322,34 @@ class MysqlStore:
                         if key in seen_entities:
                             eid = seen_entities[key]
                         else:
-                            eid = str(uuid.uuid4())
+                            new_eid = str(uuid.uuid4())
                             await cur.execute(
                                 "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
                                 "VALUES (%s,%s,%s,%s,%s) "
                                 "AS new_ent ON DUPLICATE KEY UPDATE "
                                 "name=new_ent.name",
-                                (eid, e.type, e.name, norm, e.description),
+                                (new_eid, e.type, e.name, norm, e.description),
                             )
                             await cur.execute(
                                 "SELECT id FROM aisag_entities WHERE entity_type=%s AND normalized_name=%s",
                                 (e.type, norm),
                             )
                             row = await cur.fetchone()
-                            eid = str(row["id"]) if row else eid
+                            actual_id = str(row["id"]) if row else new_eid
+                            if actual_id == new_eid:
+                                new_entity_count += 1
+                            else:
+                                reused_entity_count += 1
+                            eid = actual_id
                             seen_entities[key] = eid
                         await cur.execute(
                             "INSERT IGNORE INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
                             "VALUES (%s,%s,%s,%s,%s)",
                             (str(uuid.uuid4()), event.id, eid, e.weight, e.role),
                         )
+                log.info("实体去重统计 新实体={} 复用已有={} 总引用={}",
+                         new_entity_count, reused_entity_count,
+                         new_entity_count + reused_entity_count)
 
         return event_records, seen_entities
 

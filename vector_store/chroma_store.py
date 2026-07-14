@@ -63,14 +63,16 @@ class ChromaVectorStoreBackend(BaseVectorStore):
             meta = unique_metas[i] if unique_metas else {}
             nodes.append(TextNode(id_=cid, text=text, embedding=emb, metadata=meta))
         
-        skipped_total = len(ids) - len(unique_ids) + len(unique_ids) - len(nodes)
+        skipped_dup = len(ids) - len(unique_ids)
+        skipped_existing = len(unique_ids) - len(nodes)
+        skipped_total = skipped_dup + skipped_existing
         if nodes:
             self._store(name).add(nodes)
-            log.info("向量写入 collection={} 传入={} 跳过去重={} 实际写入={}",
-                     name, len(ids), skipped_total, len(nodes))
+            log.info("向量写入 collection={} 传入={} 跳过(内部ID重复={}/已存在={})={} 实际写入={}",
+                     name, len(ids), skipped_dup, skipped_existing, skipped_total, len(nodes))
         else:
-            log.info("向量写入 collection={} 传入={} 跳过去重={} 实际写入=0（全部已存在）",
-                     name, len(ids), skipped_total)
+            log.info("向量写入 collection={} 传入={} 跳过(内部ID重复={}/已存在={})={} 实际写入=0（全部已存在）",
+                     name, len(ids), skipped_dup, skipped_existing, skipped_total)
 
     def query(self, name: Collection, query_embedding: list[float], top_k: int,
               similarity_threshold: float = 0.0,
@@ -98,7 +100,7 @@ class ChromaVectorStoreBackend(BaseVectorStore):
         return hits
 
     def delete_by_source(self, source_id: str) -> None:
-        """按 source_id 删除 chunks/event_titles/event_contents 三个 collection 的向量。
+        """按 source_id 删除 chunks/event_titles/event_contents/event_summaries 四个 collection 的向量。
 
         注意：entities collection 不按 source_id 删（实体跨 source 共享，去重），
         孤儿实体通过 delete_entities_by_ids 单独清理。
@@ -117,14 +119,11 @@ class ChromaVectorStoreBackend(BaseVectorStore):
     def delete_entities_by_ids(self, entity_ids: list[str]) -> None:
         if not entity_ids:
             return
-        try:
-            col = self._store("entities")._collection
-            before = col.count()
-            col.delete(ids=entity_ids)
-            after = col.count()
-            log.info("实体向量删除 ids数量={} 删除前={} 删除后={}", len(entity_ids), before, after)
-        except Exception as e:
-            log.warning("实体向量删除失败 ids={} err={}", entity_ids, e)
+        col = self._store("entities")._collection
+        before = col.count()
+        col.delete(ids=entity_ids)
+        after = col.count()
+        log.info("实体向量删除 ids数量={} 删除前={} 删除后={}", len(entity_ids), before, after)
 
     def delete_event_ids(self, event_ids: list[str]) -> None:
         """按 event_id 硬删除 event_titles / event_contents 向量。"""

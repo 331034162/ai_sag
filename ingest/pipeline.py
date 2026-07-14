@@ -216,7 +216,8 @@ class IngestPipeline:
             chunks=chunks, events=extracted_events,
             md5=md5,
         )
-        log.info("MySQL 写入完成 事件={} 去重实体={}", len(event_records), len(seen_entities))
+        log.info("MySQL 写入完成 事件={} 实体引用={}（含跨文档共享复用，向量库仅写新增实体）",
+                 len(event_records), len(seen_entities))
 
         try:
             log.info("写入 chunks 向量 数量={}", len(chunks))
@@ -336,14 +337,22 @@ class IngestPipeline:
             unsynced = await self.db.find_unsynced_sources()
             for sid in unsynced:
                 log.warning("对账：发现未同步向量的 source，清理中 source_id={}", sid)
+                orphan_ids_first: list[str] = []
                 try:
-                    await self.db.delete_by_source(sid)
+                    _, orphan_ids_first = await self.db.delete_by_source(sid)
                 except Exception as e:
                     log.warning("对账：MySQL 删除 unsynced source 失败（可能已物理删除）source_id={} err={}", sid, e)
                 try:
                     await self.vectors.adelete_by_source(sid)
                 except Exception as e:
                     log.error("对账：清理向量库失败 source_id={} err={}", sid, e)
+                # 同步清理孤儿实体向量（原本靠第三类兜底，现在即时清理缩短不一致窗口）
+                if orphan_ids_first:
+                    try:
+                        await self.vectors.adelete_entities_by_ids(orphan_ids_first)
+                    except Exception as e:
+                        log.error("对账：清理孤儿实体向量失败 source_id={} ids={} err={}",
+                                  sid, orphan_ids_first, e)
 
             # 第二类：向量库中有但 MySQL 已不存在的孤儿 source_id
             mysql_source_ids = set(await self.db.list_all_source_ids())

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS aisag_event_entities (
   entity_id    VARCHAR(36) NOT NULL,
   weight       FLOAT NOT NULL DEFAULT 1.0,
   description  TEXT,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_aisag_ee (event_id, entity_id),
   INDEX idx_aisag_ee_entity (entity_id),
   INDEX idx_aisag_ee_event (event_id)
