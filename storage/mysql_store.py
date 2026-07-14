@@ -455,23 +455,30 @@ class MysqlStore:
         result = []
         for r in ordered:
             e = self._row_to_event(r)
-            e.entity_ids = list(roles_map.get(e.id, {}).keys())
-            e.entity_roles = roles_map.get(e.id, {})
+            role_weight_map = roles_map.get(e.id, {})
+            e.entity_ids = list(role_weight_map.keys())
+            e.entity_roles = {eid: role for eid, (role, _) in role_weight_map.items()}
+            e.entity_weights = {eid: weight for eid, (_, weight) in role_weight_map.items()}
             result.append(e)
         return result
 
-    async def _entity_roles_of_events(self, event_ids: list[str]) -> dict[str, dict[str, str]]:
+    async def _entity_roles_of_events(self, event_ids: list[str]) -> dict[str, dict[str, tuple[str, float]]]:
         if not event_ids:
             return {}
         ph = ",".join(["%s"] * len(event_ids))
         rows = await self._fetchall(
-            f"SELECT event_id, entity_id, description "
+            f"SELECT event_id, entity_id, description, weight "
             f"FROM aisag_event_entities WHERE event_id IN ({ph})",
             list(event_ids),
         )
-        result: dict[str, dict[str, str]] = {}
+        result: dict[str, dict[str, tuple[str, float]]] = {}
         for r in rows:
-            result.setdefault(str(r["event_id"]), {})[str(r["entity_id"])] = r["description"] or ""
+            weight = r["weight"]
+            weight = float(weight) if weight is not None else 0.5
+            result.setdefault(str(r["event_id"]), {})[str(r["entity_id"])] = (
+                r["description"] or "",
+                weight,
+            )
         return result
 
     async def get_entity_names_by_ids(self, entity_ids: list[str]) -> dict[str, str]:

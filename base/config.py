@@ -192,6 +192,13 @@ class SearchConfig:
     # 送入 LLM 重排的最大候选数，对齐论文图示 Top-100 设计（P1-4 修复）
     rerank_candidate_limit: int = field(
         default_factory=lambda: int(_env("AISAG_RERANK_CANDIDATE_LIMIT", "100")))
+    # 精排候选格式中实体关联权重的强弱信号阈值（基于 aisag_event_entities.weight）
+    # weight >= strong 为强信号（核心关联），weak <= weight < strong 为中信号，
+    # weight < weak 为弱信号（背景引用）。调整阈值以匹配实际 weight 分布。
+    rerank_weight_strong: float = field(
+        default_factory=lambda: float(_env("AISAG_RERANK_WEIGHT_STRONG", "0.7")))
+    rerank_weight_weak: float = field(
+        default_factory=lambda: float(_env("AISAG_RERANK_WEIGHT_WEAK", "0.4")))
     max_sections: int = field(default_factory=lambda: int(_env("AISAG_MAX_SECTIONS", "5")))
     fusion: str = field(default_factory=lambda: _env("AISAG_FUSION", "concat").lower())
 

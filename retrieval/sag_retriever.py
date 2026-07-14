@@ -598,7 +598,11 @@ class SagRetriever:
 
         lines = []
         for i, ev in enumerate(events):
-            roles_text = self._format_entity_roles(ev, query_entity_set, entity_names)
+            roles_text = self._format_entity_roles(
+                ev, query_entity_set, entity_names,
+                weight_strong=self.cfg.search.rerank_weight_strong,
+                weight_weak=self.cfg.search.rerank_weight_weak,
+            )
             score = coarse_scores.get(ev.id, 0.0) if coarse_scores else 0.0
             lines.append(RERANK_CANDIDATE_FORMAT.format(
                 i=i, event_id=ev.id, title=ev.title, summary=ev.summary,
@@ -637,22 +641,37 @@ class SagRetriever:
 
     @staticmethod
     def _format_entity_roles(ev, query_entity_set: set[str],
-                             entity_names: dict[str, str]) -> str:
+                             entity_names: dict[str, str],
+                             *,
+                             weight_strong: float = 0.7,
+                             weight_weak: float = 0.4) -> str:
         if not query_entity_set or not ev.entity_roles:
             return ""
         hit_roles = []
+        n_strong = 0
+        n_weak = 0
         for eid, role in ev.entity_roles.items():
             if eid in query_entity_set:
                 name = entity_names.get(eid, eid[:8])
-                if role:
-                    hit_roles.append(f"{name}({role})")
+                weight = ev.entity_weights.get(eid, 0.5)
+                if weight >= weight_strong:
+                    signal = "强"
+                    n_strong += 1
+                elif weight >= weight_weak:
+                    signal = "中"
                 else:
-                    hit_roles.append(f"{name}(角色未标注)")
+                    signal = "弱"
+                    n_weak += 1
+                if role:
+                    hit_roles.append(f"{name}({role},{signal})")
+                else:
+                    hit_roles.append(f"{name}(角色未标注,{signal})")
         if not hit_roles:
             return ""
         total = len(query_entity_set)
         hit_count = sum(1 for eid in ev.entity_roles if eid in query_entity_set)
-        return f"命中查询实体：{'、'.join(hit_roles)}  [命中 {hit_count}/{total}]"
+        return (f"命中查询实体：{'、'.join(hit_roles)}  "
+                f"[命中 {hit_count}/{total} 强{n_strong}弱{n_weak}]")
 
     async def _sections_for_events(self, event_ids: list[str],
                                    source_ids: list[str] | None,

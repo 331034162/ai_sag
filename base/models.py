@@ -85,6 +85,7 @@ class Event:
     content: str
     entity_ids: list[str] = field(default_factory=list)
     entity_roles: dict[str, str] = field(default_factory=dict)
+    entity_weights: dict[str, float] = field(default_factory=dict)
     score: float = 0.0
 
 
