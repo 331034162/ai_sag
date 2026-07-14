@@ -13,7 +13,6 @@
 - [访问方式](#访问方式)
 - [快速开始](#快速开始)
 - [技术栈](#技术栈)
-- [存储后端替换指南](#存储后端替换指南)
 - [项目结构](#项目结构)
 - [API 概览](#api-概览)
 - [适用场景](#适用场景)
@@ -50,33 +49,13 @@
 | **资源占用** | 低（仅向量库） | **高**（图数据库 + 向量库） | 中（关系库 + 向量库，默认 MySQL + ChromaDB，均可替换） |
 | **Schema 依赖** | 无 | **有**（需预定义实体类型和关系类型） | 弱（实体类型用于辅助分类，不依赖固定关系） |
 
-### 各自的优势与劣势
-
-#### 传统 RAG
-
-| 优势 | 劣势 |
-|------|------|
-| 实现简单，组件成熟，生态丰富 | 无法处理多跳关联（"A 签了哪些合同？"需多步跳转） |
-| 离线成本低，更新快 | 跨文档实体关联几乎为零（各文档向量孤岛） |
-| 无 Schema 约束，通用性强 | 答案来源不透明，难以追溯推理链 |
-| 增量入库零摩擦 | 对关键词不敏感的语义查询可能漏召回 |
-
-#### GraphRAG
-
-| 优势 | 劣势 |
-|------|------|
-| 多跳推理能力天然强（图遍历） | **建图成本极高**（实体对齐、关系抽取、消歧、存储） |
-| 实体关系路径清晰可解释 | Schema 需提前定义，场景适配差 |
-| 一次建图，多次高效查询 | 更新代价大（新增文档需重建/增量更新图谱） |
-| 结构化关联查询效率高 | 对非实体类语义查询支持弱（如"摘要概括""情感分析"） |
-
-#### SAG（本项目）
+### SAG 的定位
 
 | 优势 | 劣势 |
 |------|------|
 | **兼具两者的优点**：有 GraphRAG 的多跳能力 + 传统 RAG 的灵活性 | 查询时 SQL Join 开销随跳数线性增长（需调优 BFS 预算） |
 | **零静态图维护**：不存图谱，只存事件-实体关联表 | 对超大规模知识库（亿级事件），SQL Join 性能需关注 |
-| **更新即生效**：入库操作就是表 INSERT，无重建成本 | 需同时维护关系库 + 向量库两个存储（但可通过接口替换为其他后端） |
+| **更新即生效**：入库操作就是表 INSERT，无重建成本 | 需同时维护关系库 + 向量库两个存储（但均可替换） |
 | **全链路可追踪**：trace 记录每一步 SQL，查问题比图遍历更直观 | 实体抽取质量直接影响多跳召回（但比 GraphRAG 容错更好） |
 | **Schema 弱依赖**：实体类型仅用于辅助分类，不约束关系 | 极端复杂推理（5 跳以上）效率不如预计算图谱 |
 
@@ -178,40 +157,37 @@ Document (source)
 
 ## 功能特性
 
-### 📄 文档管理
+### 文档上传与管理
 
 - 多格式上传：PDF / Word / Excel / Markdown / 纯文本
-- 文档列表：分页浏览 + 关键词搜索 + 归档筛选
-- 文档操作：查看详情、更新内容、下载原文、删除（含关联清理）
+- 文档 CRUD：列表浏览、详情查看、内容更新、下载原文、删除（含关联清理）
 - 全文检索：关键词命中 + 上下文片段高亮
+- 归档管理：支持文档归档/取消归档，按状态筛选
 
-### 🔍 智能检索
+### SAG 检索
 
-- **双路融合召回**：结构化路径（SQL 实体关联） + 语义路径（事件标题向量匹配）
-- 支持 `concat`（并集）和 `supplement`（补集）两种融合策略
+- **双路融合召回**：结构化路径（SQL 实体关联）+ 语义路径（事件标题向量匹配），支持 `concat` / `supplement` 融合策略
 - **BFS 多跳扩展**：通过 `event_entities` 关联表动态发现跨文档实体路径
-- **LLM 精排**：用大模型对粗排结果二次排序，提升精准度
+- **LLM 精排**：大模型对粗排结果二次排序，提升精准度
 - **全链路可追溯**：每次检索返回完整 `trace`，记录每一步的输入输出
 
-### 💬 对话问答
+### 对话问答
 
-- 单轮问答：基于检索到的上下文直接生成答案
-- 多轮对话：查询重写 + 指代消解，支持上下文连续追问
-- SSE 流式输出：实时打字效果，降低等待焦虑
-- Markdown 渲染：答案中的代码块、表格、列表自动美化
+- 单轮问答 + 多轮对话（查询重写 + 指代消解）
+- SSE 流式输出，Markdown 渲染
+- 答案附带引用来源，可追溯每个论断的出处
 
-### ⚙️ 系统配置
+### 系统运维
 
-- `.env` 统一配置：所有参数集中在环境变量文件，重启即生效
-- 配置自发现：`config.py` 从自身目录逐级向上搜索 `.env`，无需关心 clone 路径
-- 组件可插拔：LLM / Embedding / OCR / 切分器均可通过配置切换后端
-- Swagger 文档：`http://localhost:8777/docs` 提供完整 API 调试界面
+- `.env` 统一配置，重启即生效；`config.py` 自动发现 `.env`，无需关心 clone 路径
+- LLM / Embedding / OCR / 切分器均可通过配置切换后端
+- Swagger 文档（`:8777/docs`）提供完整 API 调试界面
 
-### 🛡️ 可靠性
+### 可靠性
 
-- **全链路异步**：MySQL（aiomysql）+ Embedding + LLM，高效并发；存储后端可替换
-- **跨库一致性保障**：MySQL ↔ ChromaDB 自动对账，失败回滚；可扩展至其他数据库组合
-- **全链路可观测**：trace_id 注入 + 每步结果记录，便于排查检索效果
+- **全链路异步**：MySQL（aiomysql）+ Embedding + LLM 全异步并发
+- **跨库一致性**：MySQL ↔ ChromaDB 自动对账，失败回滚
+- **可观测性**：trace_id 注入 + 每步结果日志，便于排查检索效果
 
 ---
 
@@ -235,24 +211,7 @@ Document (source)
 
 ### Swagger API — 开发调试
 
-浏览器打开 `http://localhost:8777/docs`，可交互式调试所有 15 个 API 端点，包括文档管理、检索、问答、多轮对话等。
-
-### 命令行调用
-
-```bash
-# 上传文档
-curl -X POST http://localhost:8777/api/documents -F "file=@合同公告.md"
-
-# 单轮问答
-curl -X POST http://localhost:8777/api/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query":"数脉科技跟哪个公司签了合同？"}'
-
-# SSE 流式对话
-curl -X POST http://localhost:8777/api/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{"query":"这份合同的主要条款有哪些？"}'
-```
+浏览器打开 `http://localhost:8777/docs`，可交互式调试所有 15 个 API 端点，包括文档管理、检索、问答、多轮对话等。接口详情及调用示例见下方 [API 概览](#api-概览)。
 
 ---
 
@@ -312,11 +271,37 @@ copy .env.example .env  # Windows
 
 > **提示**：`config.py` 自动从自身目录逐级向上搜索 `.env`，无论仓库 clone 到哪个路径，无需修改代码。
 
-### 5. 启动
+### 5. 一键启动（推荐）
+
+项目提供了 `setup` 脚本，自动完成虚拟环境创建、依赖安装、服务启动：
+
+```bash
+cd ai_sag/scripts
+
+# 默认 CPU 模式（创建 .venv → pip install → 启动 API + Web UI）
+./setup.sh                     # Linux / macOS
+setup.bat                      # Windows
+
+# GPU 模式（安装 CUDA 版依赖）
+./setup.sh gpu
+
+# 仅安装依赖
+./setup.sh install
+
+# 仅检查环境（Python 版本、.env 配置、MySQL 连接）
+./setup.sh check
+
+# 仅启动服务（跳过安装）
+./setup.sh start
+```
+
+脚本流程：检查 Python 3.10+ → 创建虚拟环境 → 安装依赖 → 首次运行时从 `.env.example` 复制配置模板 → 启动 `api.py` (8777) + `web.py` (8080)。
+
+### 6. 手动启动
 
 需要两个终端分别启动 API 和 Web UI。**注意必须在仓库根目录（`ai_sag_git/`）执行，不是在 `ai_sag/` 子目录！**
 
-#### 5.1 启动 API 服务（终端 1）
+#### 6.1 启动 API 服务（终端 1）
 
 ```bash
 # 1. 进入仓库根目录
@@ -334,7 +319,7 @@ python -m ai_sag.api --host 0.0.0.0 --port 8777 --reload
 
 启动成功后访问 **http://localhost:8777/docs** 查看 Swagger API 文档。
 
-#### 5.2 启动 Web UI（终端 2）
+#### 6.2 启动 Web UI（终端 2）
 
 ```bash
 # 1. 进入仓库根目录
@@ -387,50 +372,7 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 | 向量库 | ChromaDB（默认），可扩展 Milvus / Qdrant | `.env` 中 `VECTOR_STORE_BACKEND` |
 | 关系库 | MySQL（默认），可扩展 PostgreSQL | `.env` 中 `MYSQL_*` 连接配置 |
 
-> **注意**：关系库和向量库的替换目前需要**二次开发**（非配置即可切换）。详情见下方 [存储后端替换指南](#存储后端替换指南)。
-
-### 存储后端替换指南
-
-当前默认使用 MySQL + ChromaDB，替换为其他数据库需进行二次开发。两部分的替换成本差异较大：
-
-#### 向量库替换（ChromaDB → Milvus / Qdrant）— 成本较低
-
-向量库已有完善的 `BaseVectorStore` 抽象基类 + `create_vector_store()` 工厂模式，所有调用方依赖抽象接口，仅需新增实现类：
-
-| 序号 | 文件 | 修改内容 | 工作量 |
-|------|------|---------|--------|
-| 1 | `vector_store/milvus_store.py` | **新建** — 实现 `BaseVectorStore` 的 9 个抽象方法（add / query / delete / get_embeddings 等） | 高 |
-| 2 | `vector_store/factory.py` | **修改** — 注册新后端分支，取消 `NotImplementedError` | 极低 |
-| 3 | `vector_store/__init__.py` | **修改** — 导出新实现类 | 极低 |
-| 4 | `base/config.py` | **修改** — `VectorStoreConfig` 增加连接参数（host / port / collection） | 低 |
-
-> `ingest/pipeline.py`、`retrieval/sag_retriever.py`、`retrieval/qa_engine.py` 等 **3 个调用方文件无需修改**，因为它们只依赖 `BaseVectorStore` 抽象接口。
-
-#### 关系库替换（MySQL → PostgreSQL）— 成本较高
-
-关系库目前**没有抽象接口层**，所有调用方直接依赖 `MysqlStore` 具体类。替换需先建立抽象层，再实现新后端：
-
-| 序号 | 文件 | 修改内容 | 工作量 |
-|------|------|---------|--------|
-| 1 | `storage/base.py` | **新建** — 定义 `BaseRelationalStore` 抽象基类，声明 CRUD 方法签名 | 中 |
-| 2 | `storage/postgres_store.py` | **新建** — 使用 `asyncpg` 实现 `BaseRelationalStore`，适配 PostgreSQL | **高** |
-| 3 | `storage/schema_pg.sql` | **新建** — PostgreSQL 版 DDL 建表语句 | 低 |
-| 4 | `storage/factory.py` | **新建** — `create_relational_store(cfg)` 工厂函数 | 低 |
-| 5 | `storage/__init__.py` | **修改** — 导出工厂和新实现 | 低 |
-| 6 | `storage/mysql_store.py` | **修改** — 让 `MysqlStore` 继承 `BaseRelationalStore` | 低 |
-| 7 | `base/config.py` | **修改** — 改造 `MysqlConfig` 或新增 `PostgresConfig` | 中 |
-| 8 | `ingest/pipeline.py` | **修改** — `from ..storage import MysqlStore` 改用工厂创建 | 低 |
-| 9 | `retrieval/sag_retriever.py` | **修改** — 类型注解 `MysqlStore` → `BaseRelationalStore` | 低 |
-| 10 | `retrieval/qa_engine.py` | **修改** — import + 类型注解 + 实例化改用工厂 | 低 |
-
-**MySQL 特有语法需适配**（共约 8 处）：
-
-| MySQL 语法 | 出现位置 | PostgreSQL 等价写法 |
-|-----------|---------|-------------------|
-| `ON DUPLICATE KEY UPDATE` | `mysql_store.py` 4 处（upsert 逻辑） | `INSERT ... ON CONFLICT ... DO UPDATE` |
-| `INSERT IGNORE INTO` | `mysql_store.py` 2 处（去重插入） | `INSERT ... ON CONFLICT DO NOTHING` |
-| `JSON_SET()` / `JSON_EXTRACT()` | `mysql_store.py` 2 处（metadata 操作） | `jsonb_set()` / `->>` 操作符 |
-| `ON UPDATE CURRENT_TIMESTAMP` | `schema.sql` 2 处（自动更新时间戳） | 需用触发器实现 |
+> **注意**：关系库和向量库的替换目前需要**二次开发**（非配置即可切换）。向量库替换成本较低（4 个文件），关系库替换需先建立抽象层（约 10 个文件）。详细步骤见 **[docs/存储后端替换指南.md](./docs/存储后端替换指南.md)**。
 
 ---
 
@@ -457,7 +399,8 @@ your-repo/
     │   ├── 多轮对话历史处理.md   ← 多轮对话历史流转与实现
     │   ├── 内容字段抽取与作用详解.md ← 字段抽取逻辑
     │   ├── 实体字段抽取与作用详解.md ← 实体字段抽取逻辑
-    │   └── 多跳查询性能隐患.md   ← BFS 性能分析与优化
+    │   ├── 多跳查询性能隐患.md   ← BFS 性能分析与优化
+    │   └── 存储后端替换指南.md    ← MySQL/ChromaDB 替换步骤与成本评估
     │
     ├── base/                   ← 基础设施：配置、日志、数据模型、提示词
     ├── retrieval/              ← SAG 检索器（核心）+ 问答引擎
@@ -465,13 +408,14 @@ your-repo/
     ├── embeddings/             ← BGE / Qwen3 向量化
     ├── splitter/               ← 文档语义切分
     ├── extractor/              ← 事件 & 实体抽取
-    ├── vector_store/           ← ChromaDB 封装（4 个 collection）
+    ├── vector_store/           ← ChromaDB 封装（5 个 collection）
     ├── storage/                ← MySQL 持久化（6 张表，全异步）
     ├── llm/                    ← DeepSeek / OpenAI 兼容 LLM 封装
     ├── loader/                 ← 文件加载（md/txt/docx/pdf/xlsx）
     ├── doc_parser/             ← 文档深度解析（OCR、版式分析等）
     ├── cleaner/                ← 文本清洗
-    └── static/                 ← Web 前端页面
+    ├── static/                 ← Web 前端页面
+    └── scripts/                ← 一键部署脚本（setup.sh / setup.bat）
 ```
 
 ---
@@ -570,6 +514,7 @@ curl -N -X POST http://localhost:8777/api/chat/stream \
 | **[内容字段抽取与作用详解.md](./docs/内容字段抽取与作用详解.md)** | Events / Chunks / Documents 三类内容的字段抽取逻辑及在问答中的作用 |
 | **[实体字段抽取与作用详解.md](./docs/实体字段抽取与作用详解.md)** | Entities / Event_Entities 字段抽取逻辑及在问答中的作用 |
 | **[多跳查询性能隐患.md](./docs/多跳查询性能隐患.md)** | SAG BFS 多跳扩展的 SQL 性能分析：索引命中、潜在瓶颈、优化方案 |
+| **[存储后端替换指南.md](./docs/存储后端替换指南.md)** | MySQL → PostgreSQL / ChromaDB → Milvus 的替换步骤、工作量评估、SQL 语法适配 |
 
 ---
 
