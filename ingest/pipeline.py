@@ -10,7 +10,7 @@ import uuid
 
 from llama_index.core.llms import LLM
 
-from ..base import Chunk, Config, LoadedDocument
+from ..base import Chunk, Config, LoadedDocument, SUPPORTED_GENRES
 from ..base.logger import get_logger
 from ..cleaner import TextCleaner
 from ..embeddings import create_embedder
@@ -63,9 +63,12 @@ class IngestPipeline:
     async def ingest_file(self, path: str, *, source_name: str | None = None,
                           source_id: str | None = None,
                           title: str | None = None,
-                          md5: str = "") -> str:
+                          md5: str = "",
+                          ocr_images: bool | None = None,
+                          ocr_backend: str | None = None) -> str:
         # heading 修复：透传 title，避免 chunk.heading 退化为临时文件名
-        doc = self.loader.load(path, title=title)
+        # ocr_images / ocr_backend：请求级覆盖 config 默认值（None=用配置默认）
+        doc = self.loader.load(path, title=title, ocr_images=ocr_images, ocr_backend=ocr_backend)
         return await self.ingest_document(doc, source_name=source_name, source_id=source_id, md5=md5)
 
     async def ingest_text(self, title: str, content: str, *, source_name: str | None = None,
@@ -89,12 +92,17 @@ class IngestPipeline:
 
         log.info("入库开始 source={} doc={}", source_name, doc.title)
         cleaned = self.cleaner.clean(doc)
+        # 文档级文体识别（方案 A+B 前置步骤）：单文档单标签，驱动抽取时的判别规则和 role 词汇表
+        # 失败时降级为 generic，不阻断入库；用开关控制可关闭以省一次 LLM 调用
+        genre = await self._detect_genre(cleaned)
+        log.info("文体识别完成 doc={} genre={}", cleaned.title, genre)
+
         chunks = self.splitter.split(cleaned, source_id=source_id, document_id=document_id)
         if not chunks:
             raise ValueError("切分后无有效切片，请检查文档内容")
         log.info("切分完成 chunk数={} 总字符={}", len(chunks), sum(len(c.content) for c in chunks))
 
-        events = await self._extract_events(chunks, cleaned.title)
+        events = await self._extract_events(chunks, cleaned.title, genre=genre)
         total_entities = sum(len(e.entities) for e in events)
         fallback_count = sum(1 for e in events if not e.entities)
         log.info("事件抽取完成 事件数={} 实体总数={} 空实体事件数={}",
@@ -104,20 +112,22 @@ class IngestPipeline:
         log.info("入库完成 source_id={}", source_id)
         return source_id
 
-    async def _extract_events(self, chunks: list[Chunk], doc_title: str):
+    async def _extract_events(self, chunks: list[Chunk], doc_title: str, *,
+                              genre: str = "generic"):
         """事件抽取：顺序模式传递前文摘要用于代词消解，并行模式独立抽取。
 
         顺序模式：通过 extract_batch 逐 chunk 传递前一个 chunk 的事件摘要，
         LLM 可利用 previous_context 消解"该公司""上述协议"等指代。
         并行模式：各 chunk 独立并发，无法传递跨 chunk 上下文（一致性优先于速度时建议关并行）。
         任一 chunk 抽取失败（ExtractionError）均向上传播，终止入库，不写入低质量数据。
+        genre 为文档级文体标签，透传给 extractor 驱动方案 A+B 文体感知增强。
         """
         from ..base.models import ExtractionError as _ExtractionError
 
         if self.cfg.ingest.extract_parallel:
             loop = asyncio.get_running_loop()
             tasks = [
-                loop.run_in_executor(None, self.extractor.extract, chunk, doc_title)
+                loop.run_in_executor(None, self.extractor.extract, chunk, doc_title, "", genre)
                 for chunk in chunks
             ]
             # return_exceptions=True：先收集所有结果，再统一检查，避免 gather 抛异常后
@@ -140,7 +150,54 @@ class IngestPipeline:
         return await asyncio.to_thread(
             self.extractor.extract_batch, chunks, doc_title=doc_title,
             parallel=self.cfg.ingest.extract_parallel,
-            max_workers=self.cfg.ingest.extract_parallel_workers)
+            max_workers=self.cfg.ingest.extract_parallel_workers,
+            genre=genre)
+
+    async def _detect_genre(self, doc: LoadedDocument) -> str:
+        """文档级文体识别：用 LLM 从文档标题+首尾样本判断，返回 SUPPORTED_GENRES 之一。
+
+        设计要点：
+        - 文档级而非 chunk 级，降低判断误差和调用成本（每文档仅 1 次 LLM 调用）
+        - 只取标题+首尾文本样本，避免全文输入浪费 token
+        - 输出限定为 SUPPORTED_GENRES 枚举，防止 LLM 自创标签
+        - 失败或关闭开关时返回 generic，不阻断入库
+        - 查询抽取侧不调用此方法（查询无文体属性），保证入库/查询口径一致
+        """
+        if not self.cfg.ingest.genre_detect:
+            return "generic"
+        # 短路：文件类型已确定文体的，直接返回，省一次 LLM 调用
+        # xlsx/csv 均为表格数据，转 markdown 表格后走 tabular 文体抽取
+        if doc.file_type in ("xlsx", "csv"):
+            return "tabular"
+        # 首尾各取 800 字作为样本，兼顾开头定调与结尾收束
+        sample = doc.title + "\n" + doc.content[:800]
+        if len(doc.content) > 800:
+            sample += "\n...\n" + doc.content[-500:]
+        prompt = (
+            "判断以下文本的主要文体，从下列选项中选最贴切的一个：\n"
+            f"{', '.join(SUPPORTED_GENRES)}\n"
+            "选项含义：news=新闻报道，contract=合同/协议，financial_report=财务报告，"
+            "legal=法律文书，meeting=会议纪要，manual=说明书/操作手册，"
+            "academic=学术论文/研究报告，report=通用报告（工作/调研/年度/政务报告，非学术），"
+            "fiction=小说/虚构叙事，poetry=诗歌/散文诗，"
+            "tabular=表格数据，generic=通用兜底。\n"
+            "判别提示：学术报告（含实验/文献综述/方法论）归 academic，"
+            "工作/调研/年度/政务报告归 report；"
+            "虚构叙事（小说/故事/章回）归 fiction，韵文（诗/词/散曲）归 poetry；"
+            "以 markdown 表格为主体（多行多列数据）归 tabular。\n"
+            "只返回选项名（小写英文），不要解释、不要标点。\n\n文本：\n" + sample
+        )
+        try:
+            resp = await self.llm.acomplete(prompt)
+            genre = str(resp).strip().strip("\"'""''").lower()
+            # 容错：LLM 可能返回带说明的文本，取第一个匹配的 genre 词
+            for g in SUPPORTED_GENRES:
+                if g in genre:
+                    return g
+            return "generic"
+        except Exception as e:
+            log.warning("文体识别失败，降级为 generic err={}", e)
+            return "generic"
 
     async def _persist(self, source_id: str, source_name: str, document_id: str,
                        doc: LoadedDocument, chunks: list[Chunk],

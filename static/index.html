@@ -123,8 +123,25 @@
   <!-- 上传 -->
   <div class="panel">
     <h2>📤 文档上传 <span class="badge">文件</span></h2>
-    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls" />
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls" onchange="onFilePicked()" />
     <div class="hint">支持 .md / .txt / .docx / .pdf / .xlsx</div>
+    <div id="ocrOptions" style="margin-top:8px;display:none;border:1px solid var(--border,#ddd);border-radius:6px;padding:10px;background:var(--bg-alt,#fafafa)">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="ocrImages" checked onchange="onOcrToggle()" />
+        <span>图片 OCR 识别（提取内嵌图片文字，关闭可加快入库）</span>
+      </label>
+      <div id="ocrEngineRow" style="margin-top:8px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--muted,#666)">OCR 引擎：</span>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+          <input type="radio" name="ocrBackend" value="rapidocr" checked />
+          <span>RapidOCR（速度快，默认）</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+          <input type="radio" name="ocrBackend" value="paddleocr" />
+          <span>PaddleOCR（精度高，较慢）</span>
+        </label>
+      </div>
+    </div>
     <div class="row" style="margin-top:10px">
       <button onclick="uploadFile()">上传入库</button>
     </div>
@@ -354,12 +371,46 @@ async function loadDocs() {
 }
 function loadDetailId(id){ document.getElementById('detailId').value = id; loadDetail(); }
 
+// ---------- 文件选择：按后缀显隐 OCR 选项 ----------
+function onFilePicked() {
+  const f = document.getElementById('fileInput').files[0];
+  const box = document.getElementById('ocrOptions');
+  if (!f) { box.style.display = 'none'; return; }
+  const suf = (f.name.split('.').pop() || '').toLowerCase();
+  // 仅 docx / pdf 有内嵌图片，才展示 OCR 选项；其余格式隐藏
+  const show = (suf === 'docx' || suf === 'pdf');
+  box.style.display = show ? '' : 'none';
+  if (show) onOcrToggle(); // 同步引擎行的显隐
+}
+
+// ---------- OCR 总开关：关闭时隐藏引擎选择 ----------
+function onOcrToggle() {
+  const on = document.getElementById('ocrImages').checked;
+  const row = document.getElementById('ocrEngineRow');
+  if (row) row.style.display = on ? '' : 'none';
+}
+
 // ---------- 上传文件 ----------
 async function uploadFile() {
   const f = document.getElementById('fileInput').files[0];
   if (!f) { toast('请选择文件', false); return; }
-  const fd = new FormData(); fd.append('file', f);
-  toast('上传中...');
+  const ocrOn = document.getElementById('ocrImages').checked;
+  // 读取引擎单选值；未选或不可见时默认 rapidocr
+  let backend = 'rapidocr';
+  const checked = document.querySelector('input[name="ocrBackend"]:checked');
+  if (checked) backend = checked.value;
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('ocr_images', ocrOn ? 'true' : 'false');
+  // 仅 docx/pdf 才传引擎；其余格式不传（后端会忽略，且避免误导日志）
+  const suf = (f.name.split('.').pop() || '').toLowerCase();
+  if (suf === 'docx' || suf === 'pdf') {
+    fd.append('ocr_backend', backend);
+  }
+  const tip = ocrOn && (suf === 'docx' || suf === 'pdf')
+    ? `上传中（${backend === 'paddleocr' ? 'PaddleOCR' : 'RapidOCR'}，较慢）...`
+    : '上传中...';
+  toast(tip);
   try {
     const data = await api('/api/documents', { method:'POST', body: fd });
     toast(`上传成功 source_id=${data.source_id}`);

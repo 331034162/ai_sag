@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 import time
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 try:
     from .base import Config
     from .base.logger import generate_trace_id, get_logger, init_logger, reset_trace_id, set_trace_id
+    from .doc_parser.image.ocr import OCRBackend
     from .ingest import IngestPipeline
     from .retrieval.qa_engine import QAEngine
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
         sys.path.insert(0, _ROOT)
     from ai_sag.base import Config
     from ai_sag.base.logger import generate_trace_id, get_logger, init_logger, reset_trace_id, set_trace_id
+    from ai_sag.doc_parser.image.ocr import OCRBackend
     from ai_sag.ingest import IngestPipeline
     from ai_sag.retrieval.qa_engine import QAEngine
 
@@ -115,6 +117,44 @@ def _qa_engine() -> QAEngine:
         ingest = _ingest_pipeline()
         _qa = QAEngine(_config(), db=ingest.db, vectors=ingest.vectors)
     return _qa
+
+
+def _parse_bool_form(value: str | None) -> bool | None:
+    """解析表单里的布尔字段。
+
+    前端 FormData 只能传字符串，这里统一转换：
+    - "true"/"1"/"on"（不区分大小写）→ True
+    - "false"/"0"/"off"/""（不区分大小写）→ False
+    - None → None（用配置默认值）
+    其他无法识别的值也视为 None（用配置默认），宽松容错避免误关 OCR。
+    """
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v in ("true", "1", "on"):
+        return True
+    if v in ("false", "0", "off"):
+        return False
+    return None
+
+
+# OCR 后端白名单：从 doc_parser 的 OCRBackend Literal 类型提取合法值集合
+# 非法值一律归一化为 None（用配置默认），避免注入未受控参数
+_SUPPORTED_OCR_BACKENDS: set[str] = set(get_args(OCRBackend))
+
+
+def _normalize_ocr_backend(value: str | None) -> str | None:
+    """归一化 OCR 后端表单字段。
+
+    - "rapidocr" / "paddleocr"（不区分大小写）→ 原样返回小写
+    - None / 空串 / 其他非法值 → None（用配置默认值）
+    """
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v in _SUPPORTED_OCR_BACKENDS:
+        return v
+    return None
 
 
 # ---------------- 请求/响应模型 ----------------
@@ -212,6 +252,8 @@ def create_app() -> FastAPI:
     async def upload_file(
         file: UploadFile = File(...),
         source_name: str | None = Form(None),
+        ocr_images: str | None = Form(None, description="是否对 docx/pdf 中的图片做 OCR：true/false，留空用配置默认"),
+        ocr_backend: str | None = Form(None, description="OCR 引擎：rapidocr/paddleocr，留空用配置默认"),
     ):
         suffix = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
         if suffix not in ("md", "markdown", "txt", "docx", "pdf", "xlsx", "xls"):
@@ -219,6 +261,11 @@ def create_app() -> FastAPI:
         raw = await file.read()
         if not raw:
             raise HTTPException(400, "文件内容为空")
+
+        # 解析 ocr_images 表单字段：true/false 字符串转布尔，其他（含 None）视为用配置默认
+        ocr_flag = _parse_bool_form(ocr_images)
+        # 归一化 ocr_backend：白名单校验，非法值视为用配置默认
+        ocr_engine = _normalize_ocr_backend(ocr_backend)
 
         # 计算文件 MD5
         file_md5 = hashlib.md5(raw).hexdigest()
@@ -236,11 +283,14 @@ def create_app() -> FastAPI:
             f.write(raw)
             tmp_path = f.name
         try:
-            log.info("开始入库 file={} size={}B md5={}", file.filename, len(raw), file_md5)
+            log.info("开始入库 file={} size={}B md5={} ocr_images={} ocr_backend={}",
+                     file.filename, len(raw), file_md5, ocr_flag, ocr_engine)
             source_id = await pipe.ingest_file(tmp_path,
                                                 source_name=filename,
                                                 title=file.filename,
-                                                md5=file_md5)
+                                                md5=file_md5,
+                                                ocr_images=ocr_flag,
+                                                ocr_backend=ocr_engine)
             log.info("入库完成 source_id={} file={}", source_id, file.filename)
         except HTTPException:
             raise
@@ -370,9 +420,14 @@ def create_app() -> FastAPI:
 
     # ---- 文档重建（更新内容：先入新后删旧，避免空洞窗口）----
     @app.put("/api/documents/{source_id}", summary="更新文档内容（重建）")
-    async def rebuild_document(source_id: str, file: UploadFile = File(...)):
+    async def rebuild_document(
+        source_id: str,
+        file: UploadFile = File(...),
+        ocr_images: str | None = Form(None, description="是否对 docx/pdf 中的图片做 OCR：true/false，留空用配置默认"),
+        ocr_backend: str | None = Form(None, description="OCR 引擎：rapidocr/paddleocr，留空用配置默认"),
+    ):
         """重建策略：先用新 source_id 入库，成功后再删旧数据。
-        
+
         避免先删后入的空洞窗口：旧数据在入库完成前始终可检索，
         入库失败不影响旧数据可用性。
         """
@@ -383,6 +438,8 @@ def create_app() -> FastAPI:
         if not raw:
             raise HTTPException(400, "文件内容为空")
 
+        ocr_flag = _parse_bool_form(ocr_images)
+        ocr_engine = _normalize_ocr_backend(ocr_backend)
         file_md5 = hashlib.md5(raw).hexdigest()
 
         with open(_make_upload_tmp_path(file.filename, _upload_tmp_dir()), "wb") as f:
@@ -399,7 +456,8 @@ def create_app() -> FastAPI:
 
         try:
             # 1. 先用新 source_id 入库（旧数据不受影响）
-            new_id = await pipe.ingest_file(tmp_path, source_name=old_source["name"], md5=file_md5)
+            new_id = await pipe.ingest_file(tmp_path, source_name=old_source["name"], md5=file_md5,
+                                            ocr_images=ocr_flag, ocr_backend=ocr_engine)
             # 2. 入库成功后删除旧数据（失败也不影响新数据）
             await pipe.delete_source(source_id)
         except Exception as e:

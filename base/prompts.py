@@ -49,6 +49,355 @@ ENTITY_NAME_NORM = (
     "时间用\"2024年\"而非\"二〇二四年\"。"
 )
 
+# 实体本义（entity.description）按 11 类的引导表：固化"固有属性"语义边界，防止把事件语义错填进实体表
+# 设计原则：description 必须是不随事件变化的固有类别属性，role 才承载事件语义
+ENTITY_TYPE_DESCRIPTION_HINTS: dict[str, str] = {
+    "time": "时间类别（如\"日期\"\"日期时间\"\"时间段\"\"季度\"\"年份\"），只标时间性质，不标业务含义",
+    "location": "地理类型（如\"城市\"\"地址\"\"地区\"\"国家\"\"建筑\"），只标空间性质，不标业务用途",
+    "person": "身份/职位（如\"某公司CEO\"\"注册会计师\"\"法定代表人\"），只标人物固有身份",
+    "organization": "行业/性质（如\"科技公司\"\"国有银行\"\"政府机关\"\"上市公司\"），只标机构固有属性",
+    "group": "群体类别（如\"利益群体\"\"组织集合\"\"评审群体\"），只标群体性质，不标在事件中的立场",
+    "topic": "主题类别（如\"业务主题\"\"议题类别\"\"技术领域\"），只标主题性质，不标具体业务场景",
+    "work": "文件类别（如\"合同文本\"\"法律文书\"\"技术标准\"\"文献\"），只标文件类型",
+    "product": "物品类别（如\"软件系统\"\"金融产品\"\"硬件设备\"\"服务产品\"），只标产品性质",
+    "action": "行为类别（如\"商业行为\"\"法律行为\"\"技术操作\"），只标动作性质；若无明确类别可留空",
+    "metric": "度量性质（如\"金额\"\"比率\"\"数量\"\"时长\"\"比例\"），只标数据量纲，不标具体业务指标名",
+    "label": "标记类别（如\"状态标记\"\"等级标记\"\"分类标记\"），只标标记性质",
+}
+
+# 将上述引导表格式化为 prompt 段落（用于 extract_system_prompt）
+ENTITY_DESCRIPTION_GUIDE: str = "\n".join(
+    f"  · {t}: {hint}" for t, hint in ENTITY_TYPE_DESCRIPTION_HINTS.items()
+)
+
+
+# ======================================================================
+# 文体感知增强（方案 A + B）
+#
+# 设计原则（与 role 存入 event_entities 表的哲学一致）：
+# - 文体（genre）是文档级标签，单文档单标签，降低 chunk 级判断误差
+# - 文体不改变 11 类实体类型集（保持入库/查询口径一致、多跳扩展不断链）
+# - 文体只影响两件事：
+#   1) 边界判别规则（方案 A）：解决 organization/group、work/product、topic/label 等高频混淆
+#   2) role 词汇表（方案 B）：让 event_entities.description（role）按文体输出更规范
+# - 查询抽取侧不使用文体（查询无文体属性），仍走统一 11 类，保证召回一致
+# ======================================================================
+
+# 支持的文体标签（_detect_genre 输出必须命中此列表，否则降级为 generic）
+SUPPORTED_GENRES: list[str] = [
+    "news",             # 新闻报道
+    "contract",         # 合同/协议
+    "financial_report", # 财务报告
+    "legal",            # 法律文书
+    "meeting",          # 会议纪要
+    "manual",           # 说明书/操作手册
+    "academic",         # 学术论文/研究报告
+    "report",           # 通用报告（工作/调研/年度/政务报告，区别于学术报告）
+    "fiction",          # 小说/虚构叙事
+    "poetry",           # 诗歌/散文诗
+    "tabular",          # 表格数据（Excel/CSV 转 markdown 表格，含表头+数据行）
+    "generic",          # 通用兜底
+]
+
+# 基础 role 词汇表（generic 文体及兜底用，对应原 prompts 中的 role 示例段）
+BASE_ROLE_VOCAB: str = (
+    "  · organization/person: 贷款方/担保方/被投资方/签约主体/被监管方\n"
+    "  · location: 事件发生地/注册地/约定履行地\n"
+    "  · time: 签约时间/生效时间/违约起始日\n"
+    "  · product: 标的物/被担保物/付款对象\n"
+    "  · metric: 被引用指标/计算依据/限定条件\n"
+    "  · action: 主语行为/约定行为\n"
+    "  · group: 受益方/被约束方\n"
+    "  · topic/work/label: 主题/被引作品/分类标签"
+)
+
+# 文体专属 role 词汇表（方案 B）：覆盖 BASE_ROLE_VOCAB，让 role 输出更贴合文体
+GENRE_ROLE_VOCAB: dict[str, str] = {
+    "contract": (
+        "  · organization: 签约方/担保方/被担保方/违约方/受益方/见证方\n"
+        "  · person: 授权代表/法定代表人/经办人/见证人\n"
+        "  · location: 签约地/履行地/注册地/交付地\n"
+        "  · time: 签约日/生效日/届满日/违约起始日/宽限期截止日\n"
+        "  · product: 合同标的物/被担保物/付款对象/交付物\n"
+        "  · metric: 合同金额/违约金比例/利率/保证金比例/付款比例\n"
+        "  · action: 签订/履行/违约/解除/转让/终止/续期\n"
+        "  · work: 合同文本/附件/补充协议\n"
+        "  · group: 受益方/被约束方/第三方\n"
+        "  · topic: 合同主题（采购/租赁/担保/转让/服务）\n"
+        "  · label: 生效中/已终止/已违约/已履行"
+    ),
+    "financial_report": (
+        "  · organization: 母公司/子公司/关联方/被投资方/合并主体\n"
+        "  · person: 董事长/总经理/财务负责人/签字注册会计师\n"
+        "  · location: 注册地/办公地/主要经营地\n"
+        "  · time: 报告期/对比期/截止日/披露日\n"
+        "  · product: 主营业务/理财产品/金融工具\n"
+        "  · metric: 营业收入/净利润/资产负债率/毛利率/同比增幅/每股收益\n"
+        "  · action: 并购/剥离/计提/确认/披露/分红\n"
+        "  · work: 财务报表/审计报告/附注\n"
+        "  · group: 股东群体/投资者/管理层/监管机构\n"
+        "  · topic: 报告主题（经营情况/财务状况/现金流）\n"
+        "  · label: 经审计/未经审计/合并报表/母公司报表"
+    ),
+    "legal": (
+        "  · organization: 原告/被告/上诉人/被上诉人/审判机关/检察机关/行政机关\n"
+        "  · person: 当事人/代理人/审判员/书记员/鉴定人\n"
+        "  · location: 案发地/管辖地/执行地\n"
+        "  · time: 立案日/开庭日/判决日/上诉期满日/执行日\n"
+        "  · product: 标的物/争议财产/执行标的\n"
+        "  · metric: 诉讼标的额/赔偿金额/诉讼费/罚金\n"
+        "  · action: 起诉/答辩/判决/执行/抗诉/上诉/调解\n"
+        "  · work: 法律依据/引用法条/判例/法律文书\n"
+        "  · group: 当事人方/利害关系人/诉讼参与人\n"
+        "  · topic: 案由/争议焦点/法律关系\n"
+        "  · label: 已立案/已审结/上诉中/执行中/已生效"
+    ),
+    "news": (
+        "  · organization: 发布方/被报道方/参与方/监管方\n"
+        "  · person: 当事人/发言人/核心人物\n"
+        "  · location: 事件发生地/总部所在地/涉及地区\n"
+        "  · time: 事件时间/发布时间/截止时间\n"
+        "  · product: 涉事产品/发布产品/相关系统\n"
+        "  · metric: 涉及金额/规模/数量/占比\n"
+        "  · action: 发布/宣布/签署/收购/上线/下架\n"
+        "  · work: 相关文件/公告/报告\n"
+        "  · group: 受影响群体/目标受众/参与方\n"
+        "  · topic: 报道主题\n"
+        "  · label: 进行中/已完成/已确认"
+    ),
+    "meeting": (
+        "  · organization: 主办方/参会方/被审议方\n"
+        "  · person: 主持人/发言人/参会人/决议人\n"
+        "  · location: 会议地点\n"
+        "  · time: 会议时间/决议时间/截止时间\n"
+        "  · product: 审议事项标的/交付物\n"
+        "  · metric: 表决比例/预算金额/指标值\n"
+        "  · action: 审议/表决/通过/否决/部署/通报\n"
+        "  · work: 议案/报告/纪要/决议\n"
+        "  · group: 参会人员/列席人员/利益相关方\n"
+        "  · topic: 议题/议程项\n"
+        "  · label: 已通过/已否决/待审议/已通报"
+    ),
+    "manual": (
+        "  · organization: 生产方/供应方/维护方\n"
+        "  · person: 操作员/维护人员/责任人\n"
+        "  · location: 安装位置/操作场所\n"
+        "  · time: 操作时间/维护周期/校准时间\n"
+        "  · product: 操作对象/设备/系统/工具\n"
+        "  · metric: 参数值/额定值/阈值/规格\n"
+        "  · action: 安装/配置/启动/校准/维护/故障处理\n"
+        "  · work: 手册章节/规范/标准\n"
+        "  · group: 操作人员/维护团队\n"
+        "  · topic: 操作主题/功能模块\n"
+        "  · label: 注意/警告/危险/必做/禁止"
+    ),
+    "academic": (
+        "  · organization: 作者单位/研究机构/资助方\n"
+        "  · person: 作者/通讯作者/合作者\n"
+        "  · location: 研究地点/样本采集地\n"
+        "  · time: 研究时间/发表时间/数据采集期\n"
+        "  · product: 实验装置/数据集/工具/模型\n"
+        "  · metric: 实验数值/统计指标/性能指标/样本量\n"
+        "  · action: 提出/验证/对比/分析/优化\n"
+        "  · work: 论文/引用文献/数据集/方法\n"
+        "  · group: 研究群体/样本群体/对比组\n"
+        "  · topic: 研究主题/研究问题\n"
+        "  · label: 已发表/预印本/已验证/待复现"
+    ),
+    "report": (
+        "  · organization: 报告主体/被汇报单位/上级机关/协同单位\n"
+        "  · person: 报告人/负责人/分管领导/相关责任人\n"
+        "  · location: 涉及地区/项目地点/辖区范围\n"
+        "  · time: 报告期/汇报时间/工作阶段/计划节点\n"
+        "  · product: 报告涉及项目/工程/系统/产出物\n"
+        "  · metric: 完成进度/指标值/预算金额/完成数量/同比环比\n"
+        "  · action: 汇报/部署/推进/落实/完成/整改/总结\n"
+        "  · work: 报告正文/附件/方案/台账\n"
+        "  · group: 工作专班/责任部门/相关人员\n"
+        "  · topic: 报告主题/工作板块\n"
+        "  · label: 已完成/推进中/待整改/已达标/超标/滞后"
+    ),
+    "fiction": (
+        "  · organization: 故事中的势力/门派/家族/机构/国度\n"
+        "  · person: 主角/配角/反派/旁白者/相关人物\n"
+        "  · location: 故事发生地/场景/虚构地名\n"
+        "  · time: 故事时间/情节节点/回忆时段/虚构纪年\n"
+        "  · product: 关键道具/法宝/信物/装备\n"
+        "  · metric: 数量/距离/时长/战力值等量化描写\n"
+        "  · action: 核心情节动作（出场/相遇/冲突/和解/死亡/转场）\n"
+        "  · work: 章节标题/篇名/角色引用的书籍/预言\n"
+        "  · group: 阵营/同伴/族群/敌对势力\n"
+        "  · topic: 情节主线/支线/主题母题\n"
+        "  · label: 虚构/回忆/梦境/伏笔/转折/结局"
+    ),
+    "poetry": (
+        "  · organization: 诗中提及的机构/团体（通常稀少）\n"
+        "  · person: 抒情主人公/被吟咏对象/历史人物\n"
+        "  · location: 意象地点/吟咏之地/虚构空间\n"
+        "  · time: 吟咏时间/季节/时辰/历史时段\n"
+        "  · product: 意象物/象征物/吟咏对象\n"
+        "  · metric: 数量/反复次数/格律相关数值（通常稀少）\n"
+        "  · action: 抒情动作/意象动态（望/思/忆/叹/归/游）\n"
+        "  · work: 诗题/诗集/引用典故出处\n"
+        "  · group: 吟咏群体/意象集合（通常稀少）\n"
+        "  · topic: 主题意象/情感母题（思乡/怀古/咏物/言志）\n"
+        "  · label: 诗体/情感基调/虚实标记"
+    ),
+    "tabular": (
+        "  · organization: 表格所属机构/责任单位/数据填报单位\n"
+        "  · person: 数据负责人/填报人/审核人/相关责任人\n"
+        "  · location: 数据涉及地区/项目地点/辖区\n"
+        "  · time: 数据周期/统计截止日/报告期/记录时点\n"
+        "  · product: 表格涉及项目/产品/系统/物资/标的物\n"
+        "  · metric: 表头度量项（销售额/数量/金额/进度/比率/同比环比），role 标注具体度量名\n"
+        "  · action: 表格动作（填报/统计/汇总/审核/盘点/结算）\n"
+        "  · work: 表名/工作表名/统计报表名称\n"
+        "  · group: 数据分类维度值（如部门类别/物资类别/地区类别）\n"
+        "  · topic: 表格主题/统计口径/业务板块\n"
+        "  · label: 数据状态（已审核/待审核/已结算/初步/终稿）或表头单位标记"
+    ),
+}
+
+# 文体专属边界判别规则（方案 A）：追加到 system prompt 末尾，解决类型边界混淆
+GENRE_DISAMBIGUATION_RULES: dict[str, str] = {
+    "contract": (
+        "\n【合同文体抽取注意】\n"
+        "- organization vs group：合同签约方/担保方归 organization，"
+        "评审委员会/见证方归 group。\n"
+        "- work vs product：具体合同文本（如《采购合同》）归 work，"
+        "合同标的物（设备/系统/货物）归 product。\n"
+        "- topic 优先抽合同主题（采购/租赁/担保/转让/服务），而非泛议题。\n"
+        "- label 用于状态标记（已生效/已违约/已终止），"
+        "条款编号、合同编号不要归 label 或 metric。\n"
+        "- metric 区分金额（role 标注含'金额'）和比例（role 标注含'比例'）。"
+    ),
+    "financial_report": (
+        "\n【财报文体抽取注意】\n"
+        "- organization vs group：母公司/子公司/关联方归 organization，"
+        "股东群体/投资者/管理层归 group。\n"
+        "- metric 区分金额（role 标注'营业收入'等）和比例（role 标注'资产负债率'等），"
+        "role 须精确到具体指标名。\n"
+        "- time 优先用报告期（2024Q3/2024年度）而非具体日期。\n"
+        "- product 用于具体金融产品或主营业务，"
+        "会计科目（应收账款/存货）不要归 product，归 metric 并在 role 标注科目名。"
+    ),
+    "legal": (
+        "\n【法律文体抽取注意】\n"
+        "- work 用于法条/法规/判例（如《民法典》第585条），不要归 topic。\n"
+        "- organization 用于法院/检察院/行政机关等机构。\n"
+        "- label 用于案件状态（已立案/已审结/上诉中/执行中），"
+        "罪名/案由归 topic 而非 label。\n"
+        "- action 优先抽法律行为（起诉/判决/执行/抗诉/调解），"
+        "不要把'审理'归 metric。\n"
+        "- person 区分当事人与诉讼参与人（代理人/鉴定人）。"
+    ),
+    "news": (
+        "\n【新闻文体抽取注意】\n"
+        "- action 是强信号，每个事件至少抽 1 个 action 实体。\n"
+        "- time 精确到日期，不要只抽年份（除非原文只给年份）。\n"
+        "- organization vs group：正式机构归 organization，"
+        "临时集合（代表团/评审团）归 group。\n"
+        "- person 必须是具体人名，"
+        "职务（如'财政部长'）归 label 而非 person。\n"
+        "- metric 优先抽涉及金额和规模数据，role 标注数据性质。"
+    ),
+    "meeting": (
+        "\n【会议纪要文体抽取注意】\n"
+        "- organization vs group：主办机构归 organization，"
+        "参会人员/列席人员归 group。\n"
+        "- action 是核心信号（审议/表决/通过/否决/部署），每个事件至少 1 个。\n"
+        "- work 用于议案/报告/纪要/决议等会议产出物。\n"
+        "- topic 用于议题/议程项，不要和 work（议案文本）混淆。\n"
+        "- label 用于决议状态（已通过/已否决/待审议）。"
+    ),
+    "manual": (
+        "\n【说明书文体抽取注意】\n"
+        "- 事件融合以'操作步骤'为核心，action 是主信号。\n"
+        "- product 是被操作对象（设备/系统/工具），role 标注'操作对象'。\n"
+        "- time/location/person/organization 若原文未明确不要硬抽。\n"
+        "- label 用于步骤编号（步骤1/步骤2）和警告等级（注意/警告/危险）。\n"
+        "- metric 用于参数值/额定值/阈值，role 标注'参数值'或'阈值'。"
+    ),
+    "academic": (
+        "\n【学术论文文体抽取注意】\n"
+        "- organization 用于作者单位/研究机构/资助方。\n"
+        "- person 区分作者与通讯作者，role 精确标注。\n"
+        "- work 用于论文/引用文献/数据集/方法名，不要把方法归 topic。\n"
+        "- metric 用于实验数值/统计指标/性能指标，"
+        "role 标注具体指标名（如'准确率''F1值'）。\n"
+        "- product 用于实验装置/数据集/工具/模型。\n"
+        "- action 优先抽研究行为（提出/验证/对比/分析/优化）。"
+    ),
+    "report": (
+        "\n【通用报告文体抽取注意】\n"
+        "- organization vs group：报告主体/上级机关/协同单位归 organization，"
+        "工作专班/责任部门成员集合归 group。\n"
+        "- action 是核心信号（汇报/部署/推进/落实/整改/总结），每个事件至少 1 个。\n"
+        "- metric 优先抽完成进度/指标值/预算金额，role 精确到具体指标名（如'完成率''预算执行率'）。\n"
+        "- time 优先用报告期/工作阶段而非具体日期。\n"
+        "- label 用于工作状态（已完成/推进中/待整改/已达标/滞后），"
+        "不要把工作板块名归 label。\n"
+        "- topic 用于报告主题/工作板块，与 work（报告正文/附件/方案）区分。"
+    ),
+    "fiction": (
+        "\n【小说/虚构叙事文体抽取注意】\n"
+        "- 事件融合以'情节单元'为核心，一个 chunk 可对应一个情节转折或场景。\n"
+        "- person 是核心信号，区分主角/配角/反派，role 标注角色功能（主角/对手/助力）。\n"
+        "- organization 用于故事中的势力/门派/家族/国度，"
+        "现实机构（作者所属出版社）一般不入库。\n"
+        "- location 可为虚构地名，照原文抽取不纠正。\n"
+        "- action 优先抽情节动作（出场/相遇/冲突/和解/死亡/转场），"
+        "不要把状态描写归 action。\n"
+        "- label 用于叙事标记（虚构/回忆/梦境/伏笔/转折/结局），辅助情节定位。\n"
+        "- product 用于关键道具/法宝/信物，role 标注'关键道具'或'信物'。\n"
+        "- metric 多半稀少，仅在原文有量化描写时抽取。"
+    ),
+    "poetry": (
+        "\n【诗歌/散文诗文体抽取注意】\n"
+        "- 事件融合以'意象/情感单元'为核心，不强求叙事结构；"
+        "若为纯抒情无情节，content 凝练意象与情感母题。\n"
+        "- topic 是核心信号，抽主题意象/情感母题（思乡/怀古/咏物/言志/闺怨），"
+        "role 标注'主题意象'或'情感母题'。\n"
+        "- product 用于意象物/象征物/吟咏对象（如'明月''梅花''孤舟'），"
+        "role 标注'意象物'或'吟咏对象'。\n"
+        "- action 抽抒情动作/意象动态（望/思/忆/叹/归/游），"
+        "不要把静态描写归 action。\n"
+        "- location/time 可为虚构或历史时空，照原文抽取。\n"
+        "- person 区分抒情主人公与被吟咏对象/历史人物。\n"
+        "- organization/group/metric 多半稀少，原文未明确不要硬抽。\n"
+        "- label 用于诗体（绝句/律诗/词/散曲）和情感基调（哀/喜/壮/幽），"
+        "辅助风格检索。"
+    ),
+    "tabular": (
+        "\n【表格数据文体抽取注意】\n"
+        "- 事件融合以'数据行/数据块'为核心：一张表的若干行可融合为一个事件，"
+        "content 用自然语言概述该数据块的事实（如'1月销售额120万，同比+15%，负责人张三'）。\n"
+        "- metric 是核心信号：表头中的度量列（销售额/数量/金额/进度/比率）必须抽为 metric，"
+        "role 精确标注具体度量名（如'销售额''同比''完成率'），不要笼统标'数值'。\n"
+        "- person vs organization：表头'负责人/填报人/审核人'列的值若为人名归 person，"
+        "若为部门/单位名归 organization，role 标注'负责人''填报人''审核人'。\n"
+        "- group 用于数据分类维度值（如'华东区''原材料类''A部门'），"
+        "不要把维度值归 organization。\n"
+        "- product 用于表格涉及的项目/产品/物资/标的物，role 标注'标的物''统计对象'。\n"
+        "- work 仅用于表名/工作表名/报表名称，不要把表头列名归 work。\n"
+        "- time 优先用数据周期/统计截止日/报告期，role 标注'统计周期''报告期''截止日'。\n"
+        "- action 抽表格动作（填报/统计/汇总/审核/盘点/结算），若 chunk 纯数据无动作可省略。\n"
+        "- topic 抽表格主题/统计口径/业务板块（如'季度销售统计''物资盘点'）。\n"
+        "- label 用于数据状态（已审核/待审核/已结算/初步/终稿），无状态则省略。\n"
+        "- 切勿把表头本身抽成实体，只抽表头下的数据值或度量项语义。"
+    ),
+}
+
+
+def _role_vocab_for_genre(genre: str) -> str:
+    """返回指定文体的 role 词汇表，无专属则回退到 BASE_ROLE_VOCAB。"""
+    return GENRE_ROLE_VOCAB.get(genre, BASE_ROLE_VOCAB)
+
+
+def _disambiguation_rules_for_genre(genre: str) -> str:
+    """返回指定文体的边界判别规则，无专属则返回空串。"""
+    return GENRE_DISAMBIGUATION_RULES.get(genre, "")
+
 
 def entity_types_brief() -> str:
     """简略版：仅列出 type 和中文标签，用于查询抽取。"""
@@ -62,18 +411,6 @@ def entity_types_detail() -> str:
         for t in ENTITY_TYPES
     )
 
-
-# DEPRECATED: 已被 CHAT_SYSTEM_PROMPT（多轮对话模式）替代，保留仅作历史兼容
-# 未来版本可移除，新代码请使用 CHAT_SYSTEM_PROMPT
-QA_PROMPT_TEMPLATE = (
-    "你是专业问答助手。请根据以下检索到的资料回答用户问题。\n"
-    "要求：1) 仅依据资料作答，不杜撰；2) 如资料不足请说明；\n"
-    "3) 引用资料时始终使用【片段N】格式（N为资料编号），每句话引用后紧跟对应编号，"
-    "不要使用\"（已引用资料）\"\"（见上文）\"等模糊表达；\n"
-    "4) 资料中若有\"（见上文）\"\"（见下图）\"\"（如图）\"\"（参见XX）\"等交叉引用，"
-    "不要照搬，应替换为资料中的实际描述或直接省略。\n\n"
-    "【参考资料】\n{context}\n\n【问题】{query}\n\n【回答】"
-)
 
 # 未检索到内容时的默认回复
 QA_EMPTY_ANSWER = "未检索到相关内容，无法回答该问题。"
@@ -157,16 +494,21 @@ def query_extract_system_prompt() -> str:
     )
 
 
-# 查询实体抽取的 user prompt 模板
-QUERY_EXTRACT_USER_PROMPT = "查询：{query}\n请返回实体名列表。"
 
-
-def extract_system_prompt(summary_max_chars: int = 500, title_max_chars: int = 100) -> str:
-    """入库抽取的 system prompt（事件原则 + 11 类实体定义 + 命名规范）。
+def extract_system_prompt(summary_max_chars: int = 500, title_max_chars: int = 100,
+                          genre: str = "generic") -> str:
+    """入库抽取的 system prompt（事件原则 + 11 类实体定义 + 命名规范 + 文体感知增强）。
 
     summary_max_chars：事件摘要的字数上限，通过 prompt 传递给 LLM 约束输出长度。
     title_max_chars：事件标题的字数上限，通过 prompt 传递给 LLM 约束输出长度。
+    genre：文档级文体标签（见 SUPPORTED_GENRES）。不影响 11 类类型集，
+        仅驱动两件事：
+        1) 方案 A：追加文体专属边界判别规则（GENRE_DISAMBIGUATION_RULES）
+        2) 方案 B：替换 role 词汇表为文体专属版本（GENRE_ROLE_VOCAB）
+        查询抽取侧不传 genre，仍用统一 11 类，保证入库/查询口径一致。
     """
+    role_vocab = _role_vocab_for_genre(genre)
+    disambiguation = _disambiguation_rules_for_genre(genre)
     return f"""你是专业的内容抽取器。从给定文本片段中抽取一个融合事件及其关联实体。
 
 事件原则：
@@ -188,20 +530,20 @@ def extract_system_prompt(summary_max_chars: int = 500, title_max_chars: int = 1
 - {ENTITY_NAME_NORM}
 - 并列实体（如"A 和 B"）拆开。
 - 只用上述 11 类，type 字段必须从其中选取。
-- 每个 entity.description 必须是该实体的固有属性（如"互联网银行"、"科技公司"、"某公司CEO"），不随事件变化，建议不超过20字。
-- 每个 entity.role 必须是该实体在当前事件中扮演的角色标签，4-10字短词，不要写成描述性长句。
-  · organization/person: 贷款方/担保方/被投资方/签约主体/被监管方
-  · location: 事件发生地/注册地/约定履行地
-  · time: 签约时间/生效时间/违约起始日
-  · product: 标的物/被担保物/付款对象
-  · metric: 被引用指标/计算依据/限定条件
-  · action: 主语行为/约定行为
-  · group: 受益方/被约束方
-  · topic/work/label: 主题/被引作品/分类标签
+- 每个 entity.description 必须是该实体的【本义/固有属性】，不随事件变化，建议不超过20字。
+  按实体类型填写本义（只标固有类别，禁止填业务含义/事件语义）：
+{ENTITY_DESCRIPTION_GUIDE}
+  核心边界：description 只回答"这是什么类型的东西"，不回答"在这个事件里它扮演什么角色"。
+  反例（禁止）：time 的 description 填"截止日期"（这是角色，应进 role）；metric 的 description 填"违约金比例"（这是业务指标名，应进 role）。
+  正例：time 实体"2023-09-18"的 description="日期"；同一实体在事件A的 role="截止日期"，在事件B的 role="交易日期"。
+- 每个 entity.role 必须是该实体在【当前事件中】扮演的业务角色，4-10字短词，承载事件语义。
+  role 是事件级关系属性，同一实体在不同事件可有不同 role；role 信息会写入事件-实体关联表用于精排，务必具体、可区分。
+  按文体选词（见下方 role 词汇表），优先用词汇表内的规范词；若词汇表未覆盖，按事件实际业务语义自拟短词。
+{role_vocab}
   示例错误：role="逾期提货每日违约金占合同含税总价的比例"（这是描述不是角色）
   示例正确：role="计算依据" 或 role="被引用指标"
 - 每个 entity.weight 为该实体在当前事件中的重要性/关联度，浮点数 0.1-1.0：
-  1.0=核心实体（事件主语/主要对象），0.7-0.9=重要参与方，0.4-0.6=次要关联，0.1-0.3=背景/上下文实体。"""
+  1.0=核心实体（事件主语/主要对象），0.7-0.9=重要参与方，0.4-0.6=次要关联，0.1-0.3=背景/上下文实体。{disambiguation}"""
 
 
 # 入库抽取的 user prompt 模板（用于 PromptTemplate）

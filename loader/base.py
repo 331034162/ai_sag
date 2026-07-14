@@ -18,7 +18,9 @@ class BaseReader(ABC):
     suffixes: tuple[str, ...] = ()
 
     @abstractmethod
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         ...
 
 
@@ -34,7 +36,7 @@ class DocumentLoader:
 
     @classmethod
     def default(cls, config=None) -> "DocumentLoader":
-        from .readers import DocxReader, ExcelReader, MarkdownReader, PDFReader, TextReader
+        from .readers import CSVReader, DocxReader, ExcelReader, MarkdownReader, PDFReader, TextReader
         loader = cls()
         loader.register(MarkdownReader())
         loader.register(TextReader())
@@ -44,19 +46,22 @@ class DocumentLoader:
         loader.register(DocxReader(doc_parser_config=doc_parser_config))
         loader.register(PDFReader(doc_parser_config=doc_parser_config))
         loader.register(ExcelReader(doc_parser_config=doc_parser_config))
+        loader.register(CSVReader())
         return loader
 
-    def load(self, path: str, title: str | None = None) -> LoadedDocument:
+    def load(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         if not os.path.exists(path):
             raise LoadError(f"文件不存在: {path}")
         suf = Path(path).suffix.lower().lstrip(".")
         reader = self._readers.get(suf)
         if reader is None:
-            raise LoadError(f"不支持的文件类型: .{suf}（支持 .md/.txt/.docx/.pdf/.xlsx）"
-                            + (f"；.xls 请先转换为 .xlsx" if suf == "xls" else ""))
+            raise LoadError(f"不支持的文件类型: .{suf}（支持 .md/.txt/.docx/.pdf/.xlsx/.csv）"
+                            + (f"；.xls 请先转换为 .xlsx 或 .csv" if suf == "xls" else ""))
         if title is None:
             title = Path(path).stem
-        return reader.read(path, title=title)
+        return reader.read(path, title=title, ocr_images=ocr_images, ocr_backend=ocr_backend)
 
     def load_text(self, title: str, content: str) -> LoadedDocument:
         """直接由文本构造文档（跳过文件解析）。"""

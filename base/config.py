@@ -225,6 +225,10 @@ class IngestConfig:
     # 是否对事件摘要（summary）生成向量入库（默认开启，后续可用于种子事件召回）
     embed_summary: bool = field(
         default_factory=lambda: _env("AISAG_EMBED_SUMMARY", "true").lower() == "true")
+    # 是否启用文档级文体识别（方案 A+B 前置步骤）：开启后每文档多一次 LLM 调用判断文体，
+    # 驱动抽取时的边界判别规则和 role 词汇表。关闭则统一用 generic 文体，省一次调用。
+    genre_detect: bool = field(
+        default_factory=lambda: _env("AISAG_GENRE_DETECT", "true").lower() == "true")
 
 
 @dataclass

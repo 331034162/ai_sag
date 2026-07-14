@@ -55,10 +55,13 @@ class EventExtractor:
         self._title_max_chars = title_max_chars
 
     def extract(self, chunk: Chunk, doc_title: str,
-                previous_context: str = "") -> ExtractedEvent:
+                previous_context: str = "",
+                genre: str = "generic") -> ExtractedEvent:
         """抽取 chunk 中的结构化事件。
 
         previous_context 为前一个 chunk 的事件摘要，用于消解代词和省略主语。
+        genre 为文档级文体标签（见 SUPPORTED_GENRES），驱动方案 A+B 的文体感知增强：
+        不改变 11 类实体类型集，仅注入文体专属的边界判别规则和 role 词汇表。
         瞬时故障（rate limit / 网络抖动 / JSON 解析偶发失败）自动重试 self._max_retries 次。
         重试耗尽后抛 ExtractionError 终止入库，不再静默返回 entities=[] 的 fallback。
         """
@@ -68,7 +71,7 @@ class EventExtractor:
                 result = self.llm.structured_predict(
                     _Event,
                     _EXTRACT_TEMPLATE,
-                    system_prompt=extract_system_prompt(self._summary_max_chars, self._title_max_chars),
+                    system_prompt=extract_system_prompt(self._summary_max_chars, self._title_max_chars, genre=genre),
                     doc_title=doc_title,
                     heading=chunk.heading,
                     previous_context=previous_context or "（无，这是文档的开头）",
@@ -87,16 +90,18 @@ class EventExtractor:
         raise ExtractionError(chunk.id, self._max_retries, last_error)
 
     def extract_batch(self, chunks: list[Chunk], doc_title: str, *,
-                      parallel: bool = False, max_workers: int = 4) -> list[ExtractedEvent]:
+                      parallel: bool = False, max_workers: int = 4,
+                      genre: str = "generic") -> list[ExtractedEvent]:
         """批量抽取。顺序模式逐 chunk 传递前文摘要用于代词消解；
         并行模式下无法传递跨 chunk 上下文（各 chunk 独立并发）。
 
-        parallel=True 时并发抽取，max_workers 控制并发数。"""
+        parallel=True 时并发抽取，max_workers 控制并发数。
+        genre 为文档级文体标签，透传给每个 chunk 的 extract，驱动方案 A+B 增强。"""
         if not parallel:
             results: list[ExtractedEvent] = []
             prev = ""
             for chunk in chunks:
-                ev = self.extract(chunk, doc_title, previous_context=prev)
+                ev = self.extract(chunk, doc_title, previous_context=prev, genre=genre)
                 results.append(ev)
                 prev = ev.summary or ""
             return results
@@ -106,7 +111,7 @@ class EventExtractor:
         errors: list[str] = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
-                pool.submit(self.extract, chunk, doc_title): i
+                pool.submit(self.extract, chunk, doc_title, genre=genre): i
                 for i, chunk in enumerate(chunks)
             }
             for future in as_completed(future_map):

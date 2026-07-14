@@ -11,7 +11,9 @@ from .base import BaseReader, LoadError
 class MarkdownReader(BaseReader):
     suffixes = ("md", "markdown")
 
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
         return LoadedDocument(
@@ -23,7 +25,9 @@ class MarkdownReader(BaseReader):
 class TextReader(BaseReader):
     suffixes = ("txt", "text", "log")
 
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
         return LoadedDocument(
@@ -39,7 +43,9 @@ class DocxReader(BaseReader):
         # heading 修复：通过 PdfDocParserConfig 注入 OCR 参数，集中管理
         self._doc_parser_config = doc_parser_config
 
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         # heading 修复：改用 doc_parser.word.v2 解析，输出含 #/## 标题层级的 Markdown
         # 之前用 python-docx 只取段落文本，丢失了表格、图片 OCR、签章等结构信息
         try:
@@ -48,8 +54,9 @@ class DocxReader(BaseReader):
             raise LoadError("缺少 doc_parser.word 依赖，请确认安装：pip install python-docx") from e
         kwargs: dict = {}
         if self._doc_parser_config is not None:
-            kwargs["ocr_backend"] = self._doc_parser_config.ocr_backend
-            kwargs["ocr_images"] = self._doc_parser_config.ocr_images
+            # 请求级 ocr_backend / ocr_images 覆盖 config 默认值（None 时用 config）
+            kwargs["ocr_backend"] = ocr_backend if ocr_backend is not None else self._doc_parser_config.ocr_backend
+            kwargs["ocr_images"] = ocr_images if ocr_images is not None else self._doc_parser_config.ocr_images
         try:
             result = _parse_word(path, **kwargs)
         except Exception as e:
@@ -119,7 +126,9 @@ class PDFReader(BaseReader):
         # heading 修复：通过 PdfDocParserConfig 注入 OCR 与 markdown_mode，集中管理
         self._doc_parser_config = doc_parser_config
 
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         # heading 修复：改用 doc_parser.pdf.v1 解析，输出含 #/## 标题层级的 Markdown
         # 之前的纯 get_text() 丢失了标题样式信息，导致 chunk.heading 退化为文件名
         try:
@@ -129,8 +138,9 @@ class PDFReader(BaseReader):
         # 从 PdfDocParserConfig 读取参数（未配置时用 parse_pdf 默认值）
         kwargs: dict = {}
         if self._doc_parser_config is not None:
-            kwargs["ocr_backend"] = self._doc_parser_config.ocr_backend
-            kwargs["ocr_images"] = self._doc_parser_config.ocr_images
+            # 请求级 ocr_backend / ocr_images 覆盖 config 默认值（None 时用 config）
+            kwargs["ocr_backend"] = ocr_backend if ocr_backend is not None else self._doc_parser_config.ocr_backend
+            kwargs["ocr_images"] = ocr_images if ocr_images is not None else self._doc_parser_config.ocr_images
             kwargs["markdown_mode"] = self._doc_parser_config.pdf_markdown_mode
         try:
             result = _parse_pdf(path, **kwargs)
@@ -168,7 +178,9 @@ class ExcelReader(BaseReader):
         # 让 Excel 样式表降级副本也走统一临时目录
         self._doc_parser_config = doc_parser_config
 
-    def read(self, path: str, title: str | None = None) -> LoadedDocument:
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
         try:
             import openpyxl  # noqa: F401
         except ImportError as e:
@@ -225,3 +237,53 @@ class ExcelReader(BaseReader):
                 )
         except OSError as e:
             raise LoadError(f"读取文件签名失败: {e}") from e
+
+
+class CSVReader(BaseReader):
+    """CSV 文档 Reader：将 CSV 转为 Markdown 表格，file_type 标记为 csv。
+
+    CSV 本质是表格数据，转 markdown 表格后与 Excel 走相同的 tabular 文体抽取流程。
+    编码优先 utf-8-sig（带 BOM）/utf-8，回退 gbk/gb18030（中文 CSV 常用 gbk）。
+    第一行视为表头，生成标准 markdown 表格语法。
+    """
+
+    suffixes = ("csv",)
+
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
+        content = self._csv_to_markdown(path)
+        return LoadedDocument(
+            title=title or os.path.basename(path), content=content,
+            source_path=path, file_type="csv",
+        )
+
+    @staticmethod
+    def _csv_to_markdown(path: str) -> str:
+        import csv as _csv
+        text: str | None = None
+        for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
+            try:
+                with open(path, "r", encoding=enc) as f:
+                    text = f.read()
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        rows = list(_csv.reader(text.splitlines()))
+        if not rows:
+            return ""
+        header = rows[0]
+        col_count = len(header)
+
+        def _escape(cell: str) -> str:
+            return cell.replace("|", "\\|").replace("\n", " ").strip()
+
+        lines = ["| " + " | ".join(_escape(h) for h in header) + " |"]
+        lines.append("| " + " | ".join("---" for _ in header) + " |")
+        for row in rows[1:]:
+            padded = (row + [""] * col_count)[:col_count]
+            lines.append("| " + " | ".join(_escape(c) for c in padded) + " |")
+        return "\n".join(lines)
