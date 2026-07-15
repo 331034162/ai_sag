@@ -170,12 +170,11 @@ class SearchConfig:
     # 多实体场景去重后更容易达到 min_batch，让度数过滤统计量更稳
     entity_expand_topk: int = field(
         default_factory=lambda: int(_env("AISAG_ENTITY_EXPAND_TOPK", "20")))
-    # 实体向量扩展开关（默认关闭）：
+    # 实体向量扩展开关（默认开启）：
     #   true  - 用 LLM 抽取的实体名 embedding 去向量库找近邻，补充同义词/相关实体
     #   false - 仅用精确匹配（SQL 按名字查），不从向量库扩展实体
-    # 关闭动机：LLM 抽的实体若在库中无精确落点（抽象/泛化实体），其 embedding 在向量空间
-    # 无根，扩展会漂移到词面相近的噪声实体（如"架构团队"漂移到"机构管理/流程管理"），
-    # 污染种子事件池。默认关闭以让检索更诚实——库中无对应实体则不硬凑。
+    # 开启动机：弥补实体名同义词/别名差异（如"大模型"vs"AI大模型应用"），提高召回率；
+    # 若数据噪声多或泛化实体污染严重，可设为 false 退化为精确匹配，更保守。
     entity_expand_enabled: bool = field(
         default_factory=lambda: _env("AISAG_ENTITY_EXPAND_ENABLED", "true").lower() == "true")
     max_hops: int = field(default_factory=lambda: int(_env("AISAG_MAX_HOPS", "2")))

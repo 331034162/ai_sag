@@ -261,7 +261,7 @@ copy .env.example .env  # Windows
 # 编辑 .env，填入关键配置
 ```
 
-必填配置项：
+必填配置项（其余配置均有合理默认值，初次使用无需修改）：
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
@@ -269,7 +269,10 @@ copy .env.example .env  # Windows
 | `SAG_LLM_API_KEY` | LLM API Key | `sk-xxxxxxxx` |
 | `SAG_BGE_MODEL_PATH` | BGE 模型本地路径 | `/models/bge-small-zh-v1.5` |
 
-> **提示**：`config.py` 自动从自身目录逐级向上搜索 `.env`，无论仓库 clone 到哪个路径，无需修改代码。
+> **提示**：
+> 1. `config.py` 自动从自身目录逐级向上搜索 `.env`，无论仓库 clone 到哪个路径，无需修改代码。
+> 2. `.env.example` 列出了全部 **48 个可配置项**，每个参数都有默认值注释，按需取消注释调整即可。
+> 3. 实体向量扩展默认开启（`AISAG_ENTITY_EXPAND_ENABLED=true`），若召回噪声多可手动设为 `false` 退化为精确匹配。
 
 ### 5. 一键启动（推荐）
 
@@ -362,15 +365,22 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 
 ### 组件可切换
 
-| 组件 | 可选后端 | 配置方式 |
-|------|---------|---------|
-| Embedding | `bge` / `qwen3` | `.env` 中 `EMBEDDING_BACKEND` |
-| LLM | `deepseek` / `openai_like` / `openai` | `.env` 中 `LLM_BACKEND` |
-| OCR | `rapidocr` / `paddleocr` | `.env` 中 `OCR_BACKEND` |
-| 切分器 | `semantic` / `auto` / `markdown` / `sentence` | `.env` 中 `SPLIT_MODE` |
-| 融合策略 | `concat` / `supplement` | API 请求参数 `fusion_strategy` |
-| 向量库 | ChromaDB（默认），可扩展 Milvus / Qdrant | `.env` 中 `VECTOR_STORE_BACKEND` |
-| 关系库 | MySQL（默认），可扩展 PostgreSQL | `.env` 中 `MYSQL_*` 连接配置 |
+所有环境变量均以 `AISAG_` 前缀开头：
+
+| 组件 | 可选后端 | 配置方式（`.env` 中） |
+|------|---------|----------------------|
+| Embedding | `bge`（默认）/ `qwen3` | `SAG_EMBEDDING_BACKEND` |
+| LLM | `deepseek`（默认）/ `openai_like` / `openai` | `AISAG_LLM_BACKEND` |
+| OCR 引擎 | `rapidocr`（默认，轻量）/ `paddleocr`（高精度） | `AISAG_DOC_OCR_BACKEND` |
+| OCR 开关 | `true`（默认，OCR图片）/ `false`（不OCR，入库更快） | `AISAG_DOC_OCR_IMAGES` |
+| PDF Markdown 模式 | `direct`（默认，快）/ `pymupdf4llm`（表格更准） | `AISAG_PDF_MARKDOWN_MODE` |
+| 切分器 | `semantic`（默认）/ `auto` / `markdown` / `sentence` / `token` / `code` | `AISAG_SPLITTER_MODE` |
+| 切分语言（code 模式） | `python` / `java` / `go` / 等 | `AISAG_SPLITTER_LANGUAGE` |
+| 实体扩展开关 | `true`（默认）/ `false`（仅精确匹配） | `AISAG_ENTITY_EXPAND_ENABLED` |
+| BFS 扩展策略 | `hopllm`（默认，动态停止）/ `multi`（固定跳数） | `AISAG_SUB_STRATEGY` |
+| 双路融合策略 | `concat`（默认拼接）/ `supplement`（事件为主补足） | API 请求参数 `fusion_strategy` |
+| 向量库 | ChromaDB（默认），可扩展 Milvus / Qdrant | `AISAG_VECTOR_STORE_BACKEND` |
+| 关系库 | MySQL（默认），可扩展 PostgreSQL | `SAG_MYSQL_*` 连接配置 |
 
 > **注意**：关系库和向量库的替换目前需要**二次开发**（非配置即可切换）。向量库替换成本较低（4 个文件），关系库替换需先建立抽象层（约 10 个文件）。详细步骤见 **[docs/存储后端替换指南.md](./docs/存储后端替换指南.md)**。
 
@@ -486,17 +496,19 @@ curl -N -X POST http://localhost:8777/api/chat/stream \
 
 ## 调优参考
 
-检索效果不理想时，可调整 `ai_sag/.env` 中的关键参数：
+检索效果不理想时，可调整 `ai_sag/.env` 中的关键参数（所有参数均以 `AISAG_` 为前缀）：
 
 | 问题 | 调整方向 | 相关参数 |
 |------|---------|---------|
-| 召回太少 | ↓ 相似度阈值、↑ 最大跳数、↓ 实体扩展阈值 | `SIMILARITY_THRESHOLD`、`MAX_HOPS`、`ENTITY_EXPAND_THRESHOLD` |
-| 召回噪声多 | ↑ 实体扩展阈值、↓ 最大跳数 | `ENTITY_EXPAND_THRESHOLD`、`MAX_HOPS` |
-| 上下文不够 | ↑ 重排 Top-K、↑ 最大片段数 | `RERANK_TOP_K`、`MAX_SECTIONS` |
-| BFS 太慢 | ↓ 前沿预算、启用 hopllm 子策略 | `ENTITY_FRONTIER_BUDGET`、`SUB_STRATEGY=hopllm` |
-| 切分太碎 | ↑ chunk 大小、↓ 重叠 | `CHUNK_SIZE`、`CHUNK_OVERLAP` |
+| 召回太少 | ↓ 相似度阈值、↑ 最大跳数、↓ 实体扩展阈值 | `AISAG_SIMILARITY_THRESHOLD`、`AISAG_MAX_HOPS`、`AISAG_ENTITY_EXPAND_THRESHOLD` |
+| 召回噪声多 | ↑ 实体扩展阈值、↓ 最大跳数、开启枢纽实体抑制 | `AISAG_ENTITY_EXPAND_THRESHOLD`、`AISAG_MAX_HOPS`、`AISAG_ENTITY_FRONTIER_FILTER=true` |
+| 上下文不够 | ↑ 重排 Top-K、↑ 最大片段数、↑ 粗排候选 | `AISAG_RERANK_TOP_K`、`AISAG_MAX_SECTIONS`、`AISAG_MAX_EVENTS` |
+| BFS 太慢 | ↓ 前沿预算、启用 hopllm 动态停止策略、↓ 每跳种子数 | `AISAG_ENTITY_FRONTIER_BUDGET`、`AISAG_SUB_STRATEGY=hopllm`、`AISAG_HOP_SEED_TOPK` |
+| 枢纽实体噪声多（如"众邦银行"类高频实体污染） | 启用 OTSU 离群过滤、降低度数绝对上限 | `AISAG_ENTITY_DEGREE_METHOD=otsu`、`AISAG_ENTITY_DEGREE_ABS_MAX=30~50` |
+| 切分太碎 | ↑ chunk 大小、↓ 重叠、↓ 断点分位阈值 | `AISAG_CHUNK_SIZE`、`AISAG_CHUNK_OVERLAP`、`AISAG_BREAKPOINT_PERCENTILE` |
+| 入库太快但抽取质量差 | 开启文体识别、关闭摘要向量生成不影响效果仅省算力 | `AISAG_GENRE_DETECT=true`、`AISAG_EMBED_SUMMARY=true` |
 
-> 完整参数说明见 **[docs/STARTUP.md § 九、检索参数详解](./docs/STARTUP.md)**。
+> 完整参数说明与默认值见 `.env.example` 注释，详细调优指南见 **[docs/STARTUP.md § 九、检索参数详解](./docs/STARTUP.md)**。
 
 ---
 
