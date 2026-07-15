@@ -135,6 +135,18 @@ class MysqlStore:
                         log.info("ensure_schema: aisag_event_entities.created_at 列已存在，跳过")
                     else:
                         raise
+                # 兼容旧表：添加 (entity_id, event_id) 覆盖索引（索引已存在则跳过，错误码 1061）
+                # 用于 get_event_ids_by_entity_ids 避免 idx_aisag_ee_entity 单列索引回表。
+                try:
+                    await cur.execute(
+                        "ALTER TABLE aisag_event_entities "
+                        "ADD INDEX idx_aisag_ee_entity_event (entity_id, event_id)")
+                    log.info("ensure_schema: 已添加覆盖索引 idx_aisag_ee_entity_event")
+                except Exception as e:
+                    if getattr(e, 'args', [None])[0] == 1061:
+                        log.info("ensure_schema: 覆盖索引 idx_aisag_ee_entity_event 已存在，跳过")
+                    else:
+                        raise
 
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
@@ -362,19 +374,23 @@ class MysqlStore:
         ph_e = ",".join(["%s"] * len(entity_ids))
         params: list = list(entity_ids)
         if source_ids:
+            # JOIN 替代 EXISTS：让 MySQL 优化器一次性规划，避免每行 ee 触发子查询。
+            # ee.entity_id IN 走 idx_aisag_ee_entity，ev.source_id IN 走 idx_aisag_event_source，
+            # JOIN 走 ev.id 主键，DISTINCT 走 uq_aisag_ee(event_id, entity_id)。
             ph_s = ",".join(["%s"] * len(source_ids))
             params.extend(source_ids)
             sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
-                   f"WHERE ee.entity_id IN ({ph_e}) "
-                   f"AND EXISTS (SELECT 1 FROM aisag_events e "
-                   f"            WHERE e.id = ee.event_id AND e.source_id IN ({ph_s}))")
+                   f"INNER JOIN aisag_events ev ON ev.id = ee.event_id "
+                   f"WHERE ee.entity_id IN ({ph_e}) AND ev.source_id IN ({ph_s})")
         else:
             sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
                    f"WHERE ee.entity_id IN ({ph_e})")
         rows = await self._fetchall(sql, params)
         event_ids = [r["event_id"] for r in rows]
         if exclude:
-            exclude_set = set(exclude)
+            # Python 端过滤 tracked_events（不进 SQL，避免 NOT IN 长度膨胀）。
+            # exclude 直接迭代，无需 list() 拷贝。
+            exclude_set = set(exclude) if not isinstance(exclude, set) else exclude
             event_ids = [eid for eid in event_ids if eid not in exclude_set]
         return event_ids
 

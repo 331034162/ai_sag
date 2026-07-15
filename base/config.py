@@ -184,6 +184,47 @@ class SearchConfig:
     # 综合评分中 query 相似度的权重 α（0~1，越大越偏向语义相关性，越小越偏向低频优先）
     entity_frontier_query_weight: float = field(
         default_factory=lambda: float(_env("AISAG_ENTITY_FRONTIER_QUERY_WEIGHT", "0.6")))
+    # 边界实体度数硬过滤方法选择（可配置切换）：
+    #   "percentile" - 分位数法（默认）：剔除度数 > batch 内 P{percentile} 的实体，自适应 batch 分布
+    #   "mad"        - 绝对中位差法：剔除度数 > median + k*MAD/0.6745 的实体，对长尾分布鲁棒
+    #   "tukey"      - Tukey 篱笆法（箱线图）：剔除度数 > Q3 + k*IQR 的实体，经典统计方法
+    #   "otsu"       - Otsu 大津法：数据驱动自动找最优二分阈值，无需手动设分位数
+    #   "none"       - 关闭度数硬过滤，仅用绝对上限 + 综合评分（最早的行为）
+    entity_degree_method: str = field(
+        default_factory=lambda: _env("AISAG_ENTITY_DEGREE_METHOD", "otsu").lower())
+    # ---- 以下 4 个参数控制 BFS 边界实体的度数离群检测 ----
+    # 背景：BFS 每跳收集的边界实体中，有些实体关联了大量事件（高「度数」），
+    # 这类「枢纽实体」（如"2024年""已发布"等常见词）会桥接大量无关事件，污染检索。
+    # 过滤分两层：① 绝对上限兜底 → ② 统计离群检测（方法由 entity_degree_method 选择）。
+    #
+    # 绝对度数硬上限：度数 > 此值的实体直接剔除，所有方法共用兜底。
+    # 例如设为 50，则关联超过 50 个事件的实体无条件丢弃。设为 0 关闭。
+    entity_degree_abs_max: int = field(
+        default_factory=lambda: int(_env("AISAG_ENTITY_DEGREE_ABS_MAX", "50")))
+    # 分位数法分位点（仅 entity_degree_method="percentile" 时生效）。
+    # 计算当前 batch 内实体度数的 P{percentile} 分位数，度数超过该值的实体剔除。
+    # 例如 P95 默认剔除 batch 内度数最高的 5% 枢纽实体。
+    # 取值范围 0~100，设为 100 则不过滤（P100 = 最大值）。
+    entity_degree_percentile: float = field(
+        default_factory=lambda: float(_env("AISAG_ENTITY_DEGREE_PERCENTILE", "95")))
+    # 离群倍数 k（entity_degree_method="mad" 或 "tukey" 时生效）。
+    # k 越大 → 阈值越高 → 过滤越少（越保守）；k 越小 → 过滤越多（越激进）。
+    #
+    # MAD  法：阈值 = median + k × MAD / 0.6745    （MAD/0.6745 ≈ σ 鲁棒估计）
+    # Tukey法：阈值 = Q3 + k × IQR                  （经典箱线图 k=1.5，默认 3.0 更保守）
+    #
+    # MAD 法 k 与置信度对照（正态假设，单侧 Φ(k)）：
+    #   k=1.0 → 84.1%      k=2.0 → 97.7%      k=3.0 → 99.73%
+    #   k=4.0 → 99.997%    k=5.0 → 99.99997%  （k≥5 近似关闭 MAD 过滤）
+    #
+    # 注意：此参数对 percentile / otsu / none 方法无影响。
+    entity_degree_outlier_k: float = field(
+        default_factory=lambda: float(_env("AISAG_ENTITY_DEGREE_OUTLIER_K", "5.0")))
+    # 度数离群检测的最小 batch 大小。
+    # 当边界实体数 < 此值时不执行统计检测（小样本统计量不稳定，容易误杀），
+    # 此时仅靠绝对上限兜底。设为 1 则永不跳过。
+    entity_degree_min_batch: int = field(
+        default_factory=lambda: int(_env("AISAG_ENTITY_DEGREE_MIN_BATCH", "10")))
     # 粗排相似度阈值（设为 0 则关闭，对齐旧版仅排序截断）
     coarse_threshold: float = field(
         default_factory=lambda: float(_env("AISAG_COARSE_THRESHOLD", "0")))
@@ -194,11 +235,17 @@ class SearchConfig:
         default_factory=lambda: int(_env("AISAG_RERANK_CANDIDATE_LIMIT", "100")))
     # 精排候选格式中实体关联权重的强弱信号阈值（基于 aisag_event_entities.weight）
     # weight >= strong 为强信号（核心关联），weak <= weight < strong 为中信号，
-    # weight < weak 为弱信号（背景引用）。调整阈值以匹配实际 weight 分布。
+    # weight < weak 为弱信号（背景引用）。weight 用于实体角色重要性判别，非主判据。
     rerank_weight_strong: float = field(
         default_factory=lambda: float(_env("AISAG_RERANK_WEIGHT_STRONG", "0.7")))
     rerank_weight_weak: float = field(
         default_factory=lambda: float(_env("AISAG_RERANK_WEIGHT_WEAK", "0.4")))
+    # 事件召回轮次衰减基数：精排调整后相关度 = 向量相关度 × decay^event_depth
+    # 事件深度语义：种子事件(实体召回+向量召回) depth=0；BFS hop=0 新事件 depth=1；hop=1 depth=2 ...
+    # decay=0.6 → 种子1.0 / BFS第1轮0.6 / BFS第2轮0.36，第N轮召回可信度递减。
+    # 直接作用在事件分数上，避免实体维度打分的方向错位与向量扩展污染。
+    rerank_event_decay: float = field(
+        default_factory=lambda: float(_env("AISAG_RERANK_EVENT_DECAY", "0.6")))
     max_sections: int = field(default_factory=lambda: int(_env("AISAG_MAX_SECTIONS", "5")))
     fusion: str = field(default_factory=lambda: _env("AISAG_FUSION", "concat").lower())
 

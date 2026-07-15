@@ -73,5 +73,8 @@ CREATE TABLE IF NOT EXISTS aisag_event_entities (
   created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_aisag_ee (event_id, entity_id),
   INDEX idx_aisag_ee_entity (entity_id),
-  INDEX idx_aisag_ee_event (event_id)
+  INDEX idx_aisag_ee_event (event_id),
+  -- 覆盖索引：用于 get_event_ids_by_entity_ids（WHERE entity_id IN ... SELECT DISTINCT event_id）
+  -- 避免 idx_aisag_ee_entity 单列索引回表取 event_id，BFS 高频调用收益明显。
+  INDEX idx_aisag_ee_entity_event (entity_id, event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
