@@ -125,9 +125,9 @@
               └─────────────┬─────────────┘
                             │
               ┌─────────────┴─────────────┐
-              │     粗排 + LLM 精排         │
-              │   BM25 → Reranker LLM     │
-              │   融合排序，去重截断         │
+              │   粗排 + LLM 精排            │
+              │  向量相似度粗排 → LLM 重排    │
+              │  枢纽实体抑制 + 融合去重截断  │
               └─────────────┬─────────────┘
                             │
               ┌─────────────┴─────────────┐
@@ -166,9 +166,12 @@ Document (source)
 
 ### SAG 检索
 
-- **双路融合召回**：结构化路径（SQL 实体关联）+ 语义路径（事件标题向量匹配），支持 `concat` / `supplement` 融合策略
-- **BFS 多跳扩展**：通过 `event_entities` 关联表动态发现跨文档实体路径
-- **LLM 精排**：大模型对粗排结果二次排序，提升精准度
+- **双路融合召回**：结构化路径（SQL 实体关联）+ 语义路径（事件标题/摘要向量匹配），支持 `concat` / `supplement` 融合策略
+- **实体向量扩展**：用 LLM 抽取的实体名 embedding 去向量库找近邻，补充同义词/别名（可配置开关 `AISAG_ENTITY_EXPAND_ENABLED`）
+- **BFS 多跳扩展**：通过 `event_entities` 关联表动态发现跨文档实体路径，支持 `hopllm`（动态停止）和 `multi`（固定跳数）两种策略
+- **枢纽实体抑制**：OTSU / percentile / MAD 离群检测自动过滤高频桥接实体（如"众邦银行"），抑制噪声扩散
+- **种子实体保护**：独立于 BFS 的保守过滤参数，防止种子实体过度剔除导致断链
+- **LLM 精排**：大模型对粗排结果二次排序，支持实体关联权重（强/弱信号）和事件深度衰减
 - **全链路可追溯**：每次检索返回完整 `trace`，记录每一步的输入输出
 
 ### 对话问答
@@ -350,17 +353,17 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 
 | 层级 | 技术选型 | 版本要求 |
 |------|---------|---------|
-| **RAG 框架** | LlamaIndex | ≥ 0.12.0 |
+| **RAG 框架** | LlamaIndex（切分/Embedding 底层） | ≥ 0.12.0 |
 | **Web 服务** | FastAPI + Uvicorn | — |
 | **向量数据库** | ChromaDB（可替换为 Milvus / Qdrant 等） | ≥ 1.0.0 |
 | **关系数据库** | MySQL + aiomysql（可替换为 PostgreSQL 等） | MySQL ≥ 8.0 |
 | **LLM 后端** | DeepSeek / OpenAI / vLLM / Ollama | OpenAI 兼容协议 |
 | **Embedding** | BAAI/bge-small-zh-v1.5 / Qwen3-Embedding-0.6B | 本地推理 |
 | **文档解析** | PyMuPDF + python-docx + openpyxl + PaddleOCR / RapidOCR | — |
-| **文本切分** | LlamaIndex SentenceSplitter / TokenTextSplitter | — |
+| **文本切分** | 自研 ChunkSplitter（语义/Markdown/代码等多模式） | 底层依赖 LlamaIndex |
 | **异步运行时** | asyncio（全链路异步 I/O） | Python 3.10+ |
 | **日志** | loguru | 控制台 + 文件双输出 |
-| **配置管理** | python-dotenv + Pydantic v2 | — |
+| **配置管理** | python-dotenv + dataclasses | Pydantic 仅用于 API 请求/响应模型 |
 | **前端** | 原生 HTML/CSS/JS + marked.js | 无构建依赖 |
 
 ### 组件可切换
@@ -401,15 +404,8 @@ your-repo/
     │
     ├── docs/                   ← 技术文档
     │   ├── STARTUP.md          ← 启动与使用指南
-    │   ├── FLOW.md             ← 全流程详解（离线建库 + 在线检索）
-    │   ├── INGEST_FLOW.md      ← 入库流程（英文版）
     │   ├── 入库流程.md          ← 入库流程中文详解
-    │   ├── 问答流程.md          ← 用户问答处理全链路
-    │   ├── 问答对话参数配置.md   ← 问答链路所有参数汇总
-    │   ├── 多轮对话历史处理.md   ← 多轮对话历史流转与实现
-    │   ├── 内容字段抽取与作用详解.md ← 字段抽取逻辑
-    │   ├── 实体字段抽取与作用详解.md ← 实体字段抽取逻辑
-    │   ├── 多跳查询性能隐患.md   ← BFS 性能分析与优化
+    │   ├── 检索流程.md          ← 检索全链路详解（双路召回→BFS→精排→生成）
     │   └── 存储后端替换指南.md    ← MySQL/ChromaDB 替换步骤与成本评估
     │
     ├── base/                   ← 基础设施：配置、日志、数据模型、提示词
@@ -432,7 +428,7 @@ your-repo/
 
 ## API 概览
 
-### 文档管理（8 个端点）
+### 文档管理（9 个端点）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -442,6 +438,7 @@ your-repo/
 | `GET` | `/api/documents/search` | 全文搜索（含上下文片段） |
 | `GET` | `/api/documents/{id}` | 文档详情（含 chunk/事件统计） |
 | `GET` | `/api/documents/{id}/download` | 下载原文（.md） |
+| `PATCH` | `/api/documents/{id}` | 更新文档元信息（标题/描述） |
 | `PUT` | `/api/documents/{id}` | 更新文档内容（重建索引） |
 | `DELETE` | `/api/documents/{id}` | 删除文档（含事件+孤儿实体清理） |
 
@@ -517,15 +514,8 @@ curl -N -X POST http://localhost:8777/api/chat/stream \
 | 文档 | 内容 |
 |------|------|
 | **[STARTUP.md](./docs/STARTUP.md)** | 启动与使用指南：环境准备、配置、启动、API 调用示例、检索参数调优、常见问题 |
-| **[FLOW.md](./docs/FLOW.md)** | 全流程详解（英文），覆盖离线建库和在线检索两个阶段的每一步及对应代码位置 |
-| **[INGEST_FLOW.md](./docs/INGEST_FLOW.md)** | 文档离线入库全流程（英文）：loader → cleaner → splitter → extractor → 持久化 |
 | **[入库流程.md](./docs/入库流程.md)** | 入库流程中文详解：概要流程 → 流程细节 → 实现逻辑，三个层次逐级深入 |
-| **[问答流程.md](./docs/问答流程.md)** | 用户问答处理全链路：双路召回 → BFS 扩展 → 粗排精排 → 生成回答 |
-| **[问答对话参数配置.md](./docs/问答对话参数配置.md)** | 问答链路所有参数汇总：环境变量、检索参数、对话参数、LLM 参数、Prompt 模板 |
-| **[多轮对话历史处理.md](./docs/多轮对话历史处理.md)** | 多轮对话中"历史"在各环节的作用、流转、实现逻辑（含流程图、实例分析） |
-| **[内容字段抽取与作用详解.md](./docs/内容字段抽取与作用详解.md)** | Events / Chunks / Documents 三类内容的字段抽取逻辑及在问答中的作用 |
-| **[实体字段抽取与作用详解.md](./docs/实体字段抽取与作用详解.md)** | Entities / Event_Entities 字段抽取逻辑及在问答中的作用 |
-| **[多跳查询性能隐患.md](./docs/多跳查询性能隐患.md)** | SAG BFS 多跳扩展的 SQL 性能分析：索引命中、潜在瓶颈、优化方案 |
+| **[检索流程.md](./docs/检索流程.md)** | 用户问答检索全链路：双路召回 → BFS 扩展 → 粗排精排 → 生成回答，含枢纽实体过滤、hopllm动态停止等最新功能 |
 | **[存储后端替换指南.md](./docs/存储后端替换指南.md)** | MySQL → PostgreSQL / ChromaDB → Milvus 的替换步骤、工作量评估、SQL 语法适配 |
 
 ---
