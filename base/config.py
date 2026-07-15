@@ -164,7 +164,20 @@ class SearchConfig:
         default_factory=lambda: float(_env("AISAG_SIMILARITY_THRESHOLD", "0.4")))
     # 实体向量扩展阈值（Path A，独立于事件召回阈值）
     entity_expand_threshold: float = field(
-        default_factory=lambda: float(_env("AISAG_ENTITY_EXPAND_THRESHOLD", "0.3")))
+        default_factory=lambda: float(_env("AISAG_ENTITY_EXPAND_THRESHOLD", "0.5")))
+    # 实体向量扩展 top_k（每个查询实体名召回的近邻数）
+    # 默认 10：配合 seed_entity_min_batch=15，单实体 10 个近邻 + 精确匹配即可触发离群检测；
+    # 多实体场景去重后更容易达到 min_batch，让度数过滤统计量更稳
+    entity_expand_topk: int = field(
+        default_factory=lambda: int(_env("AISAG_ENTITY_EXPAND_TOPK", "20")))
+    # 实体向量扩展开关（默认关闭）：
+    #   true  - 用 LLM 抽取的实体名 embedding 去向量库找近邻，补充同义词/相关实体
+    #   false - 仅用精确匹配（SQL 按名字查），不从向量库扩展实体
+    # 关闭动机：LLM 抽的实体若在库中无精确落点（抽象/泛化实体），其 embedding 在向量空间
+    # 无根，扩展会漂移到词面相近的噪声实体（如"架构团队"漂移到"机构管理/流程管理"），
+    # 污染种子事件池。默认关闭以让检索更诚实——库中无对应实体则不硬凑。
+    entity_expand_enabled: bool = field(
+        default_factory=lambda: _env("AISAG_ENTITY_EXPAND_ENABLED", "true").lower() == "true")
     max_hops: int = field(default_factory=lambda: int(_env("AISAG_MAX_HOPS", "2")))
     # 多跳扩展子策略：multi（固定跳数）/ hopllm（每跳相似度动态停止）
     sub_strategy: str = field(default_factory=lambda: _env("AISAG_SUB_STRATEGY", "hopllm").lower())
@@ -219,12 +232,23 @@ class SearchConfig:
     #
     # 注意：此参数对 percentile / otsu / none 方法无影响。
     entity_degree_outlier_k: float = field(
-        default_factory=lambda: float(_env("AISAG_ENTITY_DEGREE_OUTLIER_K", "5.0")))
+        default_factory=lambda: float(_env("AISAG_ENTITY_DEGREE_OUTLIER_K", "3.0")))
     # 度数离群检测的最小 batch 大小。
     # 当边界实体数 < 此值时不执行统计检测（小样本统计量不稳定，容易误杀），
     # 此时仅靠绝对上限兜底。设为 1 则永不跳过。
     entity_degree_min_batch: int = field(
         default_factory=lambda: int(_env("AISAG_ENTITY_DEGREE_MIN_BATCH", "10")))
+    # 种子实体总量上限：精确匹配+向量扩展合并去重后的硬上限，防止 LLM 抽太多撑爆种子事件池
+    seed_entity_budget: int = field(
+        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_BUDGET", "20")))
+    # 种子实体离群检测触发下限：种子 batch < 此值时跳过离群检测，仅靠绝对上限兜底
+    # 比 BFS 的 entity_degree_min_batch 更保守，因种子样本更小、统计量更不稳
+    seed_entity_min_batch: int = field(
+        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_MIN_BATCH", "15")))
+    # 种子实体过度过滤保护下限：离群检测后若剩余数 < max(len//2, 此值) 则回退到 abs_max 结果
+    # 比 BFS 的 5 更高，因种子实体更宝贵，断链代价更大
+    seed_entity_min_keep: int = field(
+        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_MIN_KEEP", "8")))
     # 粗排相似度阈值（设为 0 则关闭，对齐旧版仅排序截断）
     coarse_threshold: float = field(
         default_factory=lambda: float(_env("AISAG_COARSE_THRESHOLD", "0")))

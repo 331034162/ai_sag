@@ -145,8 +145,9 @@ class SagRetriever:
 
         # 2. 分支1：实体召回事件（依赖步骤1的实体抽取结果）
         entity_ids: list[str] = []
+        seed_degree_rejected: set[str] = set()
         if query_entities:
-            entity_ids = await self._recall_entities(query_entities, source_ids)
+            entity_ids, seed_degree_rejected = await self._recall_entities(query_entities, source_ids)
         trace.expanded_query_entities = entity_ids  # 记录 Ûq
 
         entity_event_ids = (await self.db.get_event_ids_by_entity_ids(entity_ids, source_ids)
@@ -178,7 +179,8 @@ class SagRetriever:
         event_cache: dict[str, object] = {}
         expanded_ids, event_depth_map = await self._expand(
             seed_ids, entity_ids, source_ids,
-            query_vec, event_cache=event_cache)
+            query_vec, event_cache=event_cache,
+            seed_degree_rejected=seed_degree_rejected)
         trace.expanded_event_ids = expanded_ids
 
         # 6. 粗排（复用 Path B 已有分数，省去重复拉 embedding）
@@ -307,18 +309,19 @@ class SagRetriever:
             return []
 
     async def _recall_entities(self, names: list[str],
-                               source_ids: list[str] | None) -> list[str]:
+                               source_ids: list[str] | None
+                               ) -> tuple[list[str], set[str]]:
         exact = await self.db.search_entities_by_name(names, source_ids)
         exact_ids = [e.id for e in exact]
         exact_names = [e.name for e in exact]
         vec_ids: list[str] = []
         vec_brief: list[dict] = []
-        if names:
+        if names and self.cfg.search.entity_expand_enabled:
             name_embs = await self.embedder.aembed_texts(names)
             # 并发查询每个实体名的向量召回（P1 修复：串行→并发）
             hit_lists = await asyncio.gather(*[
                 self.vectors.aquery_entities(
-                    name_emb, top_k=5,
+                    name_emb, top_k=self.cfg.search.entity_expand_topk,
                     similarity_threshold=self.cfg.search.entity_expand_threshold,
                 )
                 for name_emb in name_embs
@@ -333,12 +336,51 @@ class SagRetriever:
                     vec_brief.append({"query": qname,
                                       "entity": vec_ent_names.get(eid, "?"),
                                       "score": round(float(score), 3)})
+        elif names and not self.cfg.search.entity_expand_enabled:
+            log.info("[观测] 实体向量扩展已关闭 仅使用精确匹配 查询实体名={}", names)
         candidate_ids = list(dict.fromkeys(exact_ids + vec_ids))
         if not candidate_ids:
             log.info("[观测] 种子实体召回 查询实体名={} 精确匹配=0 向量扩展=0 最终=0",
                      names)
-            return []
+            return [], set()
         filtered_ids = await self.db.filter_entity_ids_by_sources(candidate_ids, source_ids)
+        # === 种子实体度数过滤 ===
+        # 与 BFS 边界过滤的区别：不用综合评分截断（向量扩展已筛 sim），
+        # 离群检测用更保守的 min_batch，过度过滤保护用更高的 min_keep
+        degree_rejected: set[str] = set()
+        budget = self.cfg.search.seed_entity_budget
+        if len(filtered_ids) > budget:
+            filtered_ids = filtered_ids[:budget]
+        abs_max = self.cfg.search.entity_degree_abs_max
+        method = self.cfg.search.entity_degree_method
+        if abs_max > 0 and filtered_ids:
+            degrees = await self.db.get_entity_degrees(filtered_ids)
+            after_abs = [eid for eid in filtered_ids if degrees.get(eid, 0) <= abs_max]
+            abs_rejected = set(filtered_ids) - set(after_abs)
+            min_batch = self.cfg.search.seed_entity_min_batch
+            if method != "none" and len(after_abs) >= min_batch:
+                deg_vals = [degrees.get(eid, 0) for eid in after_abs]
+                threshold, _ = self._compute_degree_threshold(deg_vals, method)
+                after_method = [eid for eid in after_abs if degrees.get(eid, 0) <= threshold]
+                min_keep = max(len(filtered_ids) // 2, self.cfg.search.seed_entity_min_keep)
+                if len(after_method) < min_keep and abs_rejected:
+                    result_ids = after_abs
+                else:
+                    result_ids = after_method
+            else:
+                result_ids = after_abs
+            if not result_ids:
+                result_ids = filtered_ids
+            else:
+                degree_rejected = set(filtered_ids) - set(result_ids)
+            rejected_names = (await self.db.get_entity_names_by_ids(list(degree_rejected))
+                              if degree_rejected else {})
+            log.info("[观测] 种子实体度数过滤 候选={} 绝对上限={} 方法={} 过滤后={} 剔除={}\n"
+                     "  剔除实体明细={}",
+                     len(filtered_ids), abs_max, method, len(result_ids), len(degree_rejected),
+                     [{"name": rejected_names.get(eid, "?"), "degree": degrees.get(eid, 0)}
+                      for eid in degree_rejected])
+            filtered_ids = result_ids
         filtered_names = (await self.db.get_entity_names_by_ids(filtered_ids)
                           if filtered_ids else {})
         log.info("[观测] 种子实体召回 查询实体名={} 精确匹配={} 向量扩展={} 最终={}\n"
@@ -349,12 +391,13 @@ class SagRetriever:
                  exact_names,
                  vec_brief,
                  [filtered_names.get(eid, "?") for eid in filtered_ids])
-        return filtered_ids
+        return filtered_ids, degree_rejected
 
     async def _expand(self, seed_ids: list[str], initial_entity_ids: list[str],
                       source_ids: list[str] | None,
                       query_vec: list[float],
-                      event_cache: dict[str, object] | None = None
+                      event_cache: dict[str, object] | None = None,
+                      seed_degree_rejected: set[str] | None = None
                       ) -> tuple[list[str], dict[str, int]]:
         """沿 event_entities 超边做 BFS 多跳扩展。
 
@@ -379,8 +422,10 @@ class SagRetriever:
         event_depth_map: dict[str, int] = {eid: 0 for eid in seed_ids}
         # 实体去重集合：初始化为 initial_entity_ids（查询召回的实体），
         # 目的是避免 BFS 重复去查这些实体的事件——它们的事件关联已在种子召回阶段处理过。
+        # seed_degree_rejected 一并加入：种子阶段被度数剔除的 hub 不应在 BFS 重新评估
+        # （度数是固有属性，不随 batch 变化，重评只会浪费算力且可能误通过）。
         # 仅用于 BFS 去重，不记录深度。
-        tracked_entities: set[str] = set(initial_entity_ids)
+        tracked_entities: set[str] = set(initial_entity_ids) | (seed_degree_rejected or set())
         current_event_ids = list(seed_ids)
 
         log.info("BFS启动 种子事件={} 初始实体={} 最大跳数={} 子策略={}",
