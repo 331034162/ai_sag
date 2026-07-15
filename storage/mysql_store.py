@@ -147,6 +147,19 @@ class MysqlStore:
                         log.info("ensure_schema: 覆盖索引 idx_aisag_ee_entity_event 已存在，跳过")
                     else:
                         raise
+                # 兼容旧表：删除冗余单列索引（被联合索引覆盖，删除提升写入性能）
+                # idx_aisag_ee_entity 被 idx_aisag_ee_entity_event (entity_id, event_id) 覆盖
+                # idx_aisag_ee_event 被 uq_aisag_ee (event_id, entity_id) 覆盖
+                for old_idx in ("idx_aisag_ee_entity", "idx_aisag_ee_event"):
+                    try:
+                        await cur.execute(
+                            f"ALTER TABLE aisag_event_entities DROP INDEX {old_idx}")
+                        log.info("ensure_schema: 已删除冗余索引 {}", old_idx)
+                    except Exception as e:
+                        if getattr(e, 'args', [None])[0] == 1091:  # Can't DROP INDEX
+                            log.info("ensure_schema: 索引 {} 不存在，跳过", old_idx)
+                        else:
+                            raise
 
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
