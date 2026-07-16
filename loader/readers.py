@@ -162,7 +162,14 @@ class PDFReader(BaseReader):
 
 
 class ExcelReader(BaseReader):
-    """Excel 文档 Reader：使用 doc_parser/excel/v2 解析为 Markdown。
+    """Excel 文档 Reader：使用 doc_parser/excel/v6 解析为 CSV 文本。
+
+    V6 逐行输出 CSV（标准库 csv.writer 处理转义），不做 section 切分，
+    避免 V2 markdown 在 SentenceSplitter 下表格行被打散、列名与值分离导致
+    人名等实体漏抽（如"汪晨"未被识别为 person）。
+
+    CSV 文本后续由 TableSplitter 按数据行切分，每行以"列名: 值"格式呈现，
+    确保表格实体（创建人、需求编号等）列名上下文完整。
 
     仅支持 .xlsx（OOXML）格式。.xls（旧二进制格式）需经外部转换工具转为 .xlsx 后再入库。
     """
@@ -174,8 +181,6 @@ class ExcelReader(BaseReader):
     _XLSX_MAGIC = b"PK\x03\x04"  # xlsx 本质是 zip，开头签名
 
     def __init__(self, doc_parser_config=None) -> None:
-        # heading 修复：通过 PdfDocParserConfig 注入 upload_tmp_dir，
-        # 让 Excel 样式表降级副本也走统一临时目录
         self._doc_parser_config = doc_parser_config
 
     def read(self, path: str, title: str | None = None,
@@ -186,19 +191,9 @@ class ExcelReader(BaseReader):
         except ImportError as e:
             raise LoadError("缺少 openpyxl，请安装：pip install openpyxl") from e
         self._validate(path)
-        from ai_sag.doc_parser.excel import parse_excel
-        # 从 PdfDocParserConfig 读取 upload_tmp_dir（未配置时传 None，用系统默认）
-        tmp_dir = None
-        if self._doc_parser_config is not None:
-            raw_dir = (getattr(self._doc_parser_config, "upload_tmp_dir", "") or "").strip()
-            if raw_dir:
-                try:
-                    os.makedirs(raw_dir, exist_ok=True)
-                    tmp_dir = raw_dir
-                except OSError:
-                    tmp_dir = None
-        result = parse_excel(path, tmp_dir=tmp_dir, display_name=os.path.basename(title or path))
-        content = result.markdown_text
+        from ai_sag.doc_parser.excel.v6.parser import parse_excel as parse_v6
+        result = parse_v6(path)
+        content = result.to_csv_text()
         return LoadedDocument(
             title=title or os.path.basename(path), content=content,
             source_path=path, file_type="xlsx",

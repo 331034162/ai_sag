@@ -12,5 +12,6 @@ from .auto_splitter import AutoSplitter
 from .base import BaseSplitter
 from .chunk_splitter import ChunkSplitter
 from .factory import create_splitter
+from .table_splitter import TableSplitter
 
-__all__ = ["BaseSplitter", "ChunkSplitter", "AutoSplitter", "create_splitter"]
+__all__ = ["BaseSplitter", "ChunkSplitter", "AutoSplitter", "TableSplitter", "create_splitter"]

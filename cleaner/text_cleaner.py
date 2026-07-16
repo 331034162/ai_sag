@@ -36,9 +36,11 @@ class TextCleaner:
         if self.normalize_whitespace:
             lines = [self._MULTI_SPACE_RE.sub(" ", line).strip() for line in text.split("\n")]
             text = "\n".join(lines)
-        # Markdown 文档跳过硬断行合并：列表项/代码块依赖单换行保持结构，
-        # 合并且会将 "- 条目A\n- 条目B" 变成 "- 条目A - 条目B"，破坏独立语义。
-        if self.merge_hard_breaks and doc.file_type != "md":
+        # Markdown/xlsx 跳过硬断行合并：
+        # - md：列表项/代码块依赖单换行保持结构
+        # - xlsx：CSV 文本的换行符是行分隔符，合并会把所有数据行压成一行，
+        #   破坏 TableSplitter 的按行切分，导致表格实体（人名/编号）漏抽
+        if self.merge_hard_breaks and doc.file_type not in ("md", "xlsx"):
             text = self._HARD_BREAK_RE.sub(" ", text)
         if self.collapse_blank_lines:
             text = self._MULTI_NEWLINE_RE.sub("\n\n", text)

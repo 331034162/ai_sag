@@ -121,10 +121,15 @@ class IngestPipeline:
         并行模式：各 chunk 独立并发，无法传递跨 chunk 上下文（一致性优先于速度时建议关并行）。
         任一 chunk 抽取失败（ExtractionError）均向上传播，终止入库，不写入低质量数据。
         genre 为文档级文体标签，透传给 extractor 驱动方案 A+B 文体感知增强。
+
+        表格文体（tabular）强制走并行：表格 chunk 之间无语义依赖（每行独立记录），
+        顺序模式的 prev 摘要代词消解对表格无效，串行只会拖慢入库，故默认并发抽取。
         """
         from ..base.models import ExtractionError as _ExtractionError
 
-        if self.cfg.ingest.extract_parallel:
+        # 表格文体强制并发；其他文体按全局 extract_parallel 开关
+        use_parallel = self.cfg.ingest.extract_parallel or genre == "tabular"
+        if use_parallel:
             loop = asyncio.get_running_loop()
             tasks = [
                 loop.run_in_executor(None, self.extractor.extract, chunk, doc_title, "", genre)
