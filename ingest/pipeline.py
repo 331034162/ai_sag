@@ -6,6 +6,7 @@ Embedder/VectorStore 用异步接口（a 前缀方法）。
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 
 from llama_index.core.llms import LLM
@@ -22,6 +23,22 @@ from ..storage import MysqlStore
 from ..vector_store import create_vector_store
 
 log = get_logger()
+
+# V6 解析器在 Excel CSV 行首添加的角色前缀（结构识别标注）：
+#   #TITLE# / #FORM# / #SIGNING# / #GROUP_HEADER# / #DATA#
+# TableSplitter 切分时据此识别行角色并剥离；但 LoadedDocument.content 会原样写入
+# aisag_documents 表，导致 document 与 chunk 口径不一致。此正则用于入库前剥离行首前缀，
+# 仅对 xlsx 文件应用，保证 documents 表与 chunks 表内容口径一致。
+_ROLE_PREFIX_RE = re.compile(r'^#(?:TITLE|FORM|SIGNING|GROUP_HEADER|DATA)#', re.MULTILINE)
+
+
+def _strip_excel_role_prefixes(text: str) -> str:
+    """剥离 Excel V6 角色前缀，仅用于写 documents 表前的清理。
+
+    清理范围：行首的 #TITLE#/#FORM#/#SIGNING#/#GROUP_HEADER#/#DATA# 五种前缀。
+    不影响 CSV 内部的 # 字符（仅匹配行首固定前缀），不影响其他文件类型。
+    """
+    return _ROLE_PREFIX_RE.sub('', text)
 
 
 class IngestPipeline:
@@ -214,10 +231,20 @@ class IngestPipeline:
         chunk_texts = [c.content for c in chunks]
         chunk_embs = await self.embedder.aembed_texts(chunk_texts) if chunk_texts else []
 
+        # 写库前清理 documents 表 content：仅对 Excel 剥离 V6 角色前缀
+        # 时机：chunks 已切分完成（TableSplitter 用带前缀的 doc.content 识别角色），
+        #       此处只清理写 documents 表用的副本，不影响 chunks 列表与其他文件类型
+        # 判定：开关开启 + file_type 限定 xlsx/xls（当前只有 xlsx 能进 ExcelReader，xls 预留扩展）
+        #       + content 确实含 V6 前缀（防御未来 ExcelReader 切到无前缀的 V2 等版本，避免无谓清理）
+        needs_clean = (self.cfg.ingest.strip_excel_role_prefix
+                       and doc.file_type in ("xlsx", "xls")
+                       and _ROLE_PREFIX_RE.search(doc.content) is not None)
+        doc_content = _strip_excel_role_prefixes(doc.content) if needs_clean else doc.content
+
         log.info("MySQL 事务写入 source/document/chunks/events/entities")
         event_records, seen_entities = await self.db.persist_source(
             source_id=source_id, source_name=source_name, file_type=doc.file_type,
-            document_id=document_id, doc_title=doc.title, doc_content=doc.content,
+            document_id=document_id, doc_title=doc.title, doc_content=doc_content,
             chunks=chunks, events=extracted_events,
             md5=md5,
         )

@@ -317,6 +317,12 @@ class IngestConfig:
     # 驱动抽取时的边界判别规则和 role 词汇表。关闭则统一用 generic 文体，省一次调用。
     genre_detect: bool = field(
         default_factory=lambda: _env("AISAG_GENRE_DETECT", "true").lower() == "true")
+    # 是否清理 Excel 入库 documents 表的 V6 角色前缀（#TITLE#/#FORM#/#SIGNING#/#GROUP_HEADER#/#DATA#）。
+    # 开启：写 documents 表前剥离行首前缀，保证 document 与 chunk 口径一致（推荐）。
+    # 关闭：documents 表保留原始 V6 CSV（含前缀），用于调试或特殊场景。
+    # 仅对 xlsx/xls 且 content 确实含前缀的文档生效，其他文件类型不受影响。
+    strip_excel_role_prefix: bool = field(
+        default_factory=lambda: _env("AISAG_STRIP_EXCEL_ROLE_PREFIX", "true").lower() == "true")
 
 
 @dataclass
