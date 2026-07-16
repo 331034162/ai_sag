@@ -138,6 +138,9 @@ class SplitterConfig:
     chunk_size: int = field(default_factory=lambda: int(_env("AISAG_CHUNK_SIZE", "8192")))
     chunk_overlap: int = field(default_factory=lambda: int(_env("AISAG_CHUNK_OVERLAP", "800")))
     language: str = field(default_factory=lambda: _env("AISAG_SPLITTER_LANGUAGE", "python"))
+    # 表格专用 chunk_size：0 表示复用 chunk_size。
+    # 表格每行以"列名: 值"呈现，单行字符数较多，可独立调参平衡实体抽取精度与 LLM 调用成本。
+    table_chunk_size: int = field(default_factory=lambda: int(_env("AISAG_TABLE_CHUNK_SIZE", "0")))
     # semantic 模式：语义断点分位阈值（0-100），值越小切得越碎。
     # 95=保守（仅差异最大的 5% 处断句），80=激进（20% 处断句，chunk 更小更均匀）
     breakpoint_percentile_threshold: int = field(

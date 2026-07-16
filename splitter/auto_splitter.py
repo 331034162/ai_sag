@@ -1,32 +1,54 @@
 """自动切分器：根据文档类型自动选择最适配的切分策略。
 
-适配策略（默认）：
-- md / markdown  → MarkdownNodeParser（按标题切，保留层级）+ SentenceSplitter 兜底超长
-- txt / docx / pdf / xlsx / 其它 → SentenceSplitter（按句子+窗口，对纯文本最稳妥）
+适配策略：
+- md / markdown  → MarkdownNodeParser（按标题切，保留层级）
+                   （semantic 模式下 md 也走 semantic，保持原行为）
+- xlsx           → TableSplitter（按数据行切分，每行带表头列名，确保表格实体不丢失）
+- txt / docx / pdf / csv / 其它 → 根据 default_mode 选 semantic 或 sentence
 
-理由：docx/pdf 经 loader 解析后为纯文本，标题层级已丢失；只有原生 markdown
-才有可靠的标题结构。因此"适配性最好"的策略是：仅对 markdown 用结构化切分，
-其余统一按句子切，保证语义完整且不依赖可能缺失的标题。
+表格类型必须走 TableSplitter 的原因：Excel/CSV 经 V6 解析为 CSV 文本后，
+若走 sentence/semantic 切分，表格行会被打散，导致"创建人"等列名与值分离，
+LLM 无法正确识别人名实体（如"汪晨"被漏抽）。TableSplitter 按"列名: 值"格式
+保留每行的列名上下文，确保表格实体可被准确抽取。
 """
 from __future__ import annotations
 
 from ..base import Chunk, LoadedDocument
 from .base import BaseSplitter
 from .chunk_splitter import ChunkSplitter
+from .table_splitter import TableSplitter
 
 _MARKDOWN_TYPES = {"md", "markdown"}
+_TABLE_TYPES = {"xlsx", "xls"}
 
 
 class AutoSplitter(BaseSplitter):
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 100,
-                 language: str = "python") -> None:
+                 language: str = "python",
+                 default_mode: str = "sentence",
+                 embed_model=None,
+                 breakpoint_percentile_threshold: int = 95,
+                 table_chunk_size: int = 0) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.language = language
+        self._default_mode = default_mode
+        # 表格专用 chunk_size：0 时回退到通用 chunk_size
+        effective_table_size = table_chunk_size if table_chunk_size > 0 else chunk_size
         self._markdown = ChunkSplitter(
             mode="markdown", chunk_size=chunk_size, chunk_overlap=chunk_overlap, language=language)
         self._sentence = ChunkSplitter(
             mode="sentence", chunk_size=chunk_size, chunk_overlap=chunk_overlap, language=language)
+        self._table = TableSplitter(
+            chunk_size=effective_table_size, chunk_overlap=chunk_overlap)
+        self._semantic = None
+        if default_mode == "semantic":
+            if embed_model is None:
+                raise ValueError("default_mode=semantic 需要 embed_model 参数")
+            self._semantic = ChunkSplitter(
+                mode="semantic", chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                language=language, embed_model=embed_model,
+                breakpoint_percentile_threshold=breakpoint_percentile_threshold)
 
     def split(self, doc: LoadedDocument, source_id: str, document_id: str) -> list[Chunk]:
         splitter = self._select(doc.file_type)
@@ -34,6 +56,10 @@ class AutoSplitter(BaseSplitter):
 
     def _select(self, file_type: str) -> BaseSplitter:
         ft = (file_type or "").lower()
-        if ft in _MARKDOWN_TYPES:
+        if ft in _TABLE_TYPES:
+            return self._table
+        if ft in _MARKDOWN_TYPES and self._default_mode != "semantic":
             return self._markdown
+        if self._default_mode == "semantic" and self._semantic is not None:
+            return self._semantic
         return self._sentence
