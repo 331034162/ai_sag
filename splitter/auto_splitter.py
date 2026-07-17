@@ -3,13 +3,13 @@
 适配策略：
 - md / markdown  → MarkdownNodeParser（按标题切，保留层级）
                    （semantic 模式下 md 也走 semantic，保持原行为）
-- xlsx           → TableSplitter（按数据行切分，每行带表头列名，确保表格实体不丢失）
-- txt / docx / pdf / csv / 其它 → 根据 default_mode 选 semantic 或 sentence
+- xlsx / xls / csv → TableSplitter（按数据行切分，每行带表头列名，确保表格实体不丢失）
+- txt / docx / pdf / 其它 → 根据 default_mode 选 semantic 或 sentence
 
-表格类型必须走 TableSplitter 的原因：Excel/CSV 经 V6 解析为 CSV 文本后，
+表格类型必须走 TableSplitter 的原因：Excel/CSV 都是 CSV 文本格式，
 若走 sentence/semantic 切分，表格行会被打散，导致"创建人"等列名与值分离，
-LLM 无法正确识别人名实体（如"汪晨"被漏抽）。TableSplitter 按"列名: 值"格式
-保留每行的列名上下文，确保表格实体可被准确抽取。
+LLM 无法正确识别人名实体（如"汪晨"被漏抽）。TableSplitter 用 csv.reader 解析，
+按"列名: 值"格式保留每行的列名上下文，确保表格实体可被准确抽取。
 """
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ from .chunk_splitter import ChunkSplitter
 from .table_splitter import TableSplitter
 
 _MARKDOWN_TYPES = {"md", "markdown"}
-_TABLE_TYPES = {"xlsx", "xls"}
+# 表格类文档：走 TableSplitter（按数据行切分，每行带表头列名，确保表格实体不丢失）
+# xlsx/xls：V6 解析产出 CSV 文本（带结构识别前缀）
+# csv：CSVReader 直接产出 CSV 原始文本（无前缀，走兼容模式）
+_TABLE_TYPES = {"xlsx", "xls", "csv"}
 
 
 class AutoSplitter(BaseSplitter):

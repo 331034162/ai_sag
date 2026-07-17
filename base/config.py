@@ -167,6 +167,26 @@ class LogConfig:
 
 
 @dataclass
+class CleanerConfig:
+    """文本清洗配置：控制 TextCleaner 各步骤开关，适配特殊文档场景。
+
+    默认值与 TextCleaner 原默认行为一致，无需改动即可正常工作。
+    特殊场景（如代码片段多的技术文档）可通过环境变量关闭某项清洗。
+    """
+    # 去 HTML/XML 标签（只剥离合法标签，不误伤 a<b、List<String> 等文本）
+    strip_html: bool = field(default_factory=lambda: _env("AISAG_CLEANER_STRIP_HTML", "false").lower() == "true")
+    # 合并硬断行（非段落边界的单换行）；md/xlsx/xls/csv 自动跳过
+    merge_hard_breaks: bool = field(default_factory=lambda: _env("AISAG_CLEANER_MERGE_HARD_BREAKS", "true").lower() == "true")
+    # 压缩多余空行（连续 3+ 换行压为 2 个）
+    collapse_blank_lines: bool = field(default_factory=lambda: _env("AISAG_CLEANER_COLLAPSE_BLANK_LINES", "true").lower() == "true")
+    # 规整空白（全角空格、连续空格、行首尾空白）
+    normalize_whitespace: bool = field(default_factory=lambda: _env("AISAG_CLEANER_NORMALIZE_WHITESPACE", "true").lower() == "true")
+    # 列表项保护：合并硬断行时识别 -/*/1. 等列表标记，不把列表项压成一行
+    # 关闭后退化为旧行为（所有单换行都合并），不推荐
+    protect_list_items: bool = field(default_factory=lambda: _env("AISAG_CLEANER_PROTECT_LIST_ITEMS", "true").lower() == "true")
+
+
+@dataclass
 class SearchConfig:
     # 事件召回/粗排/基线 chunk 召回的相似度阈值（论文 3.3 Path B：0.4）
     similarity_threshold: float = field(
@@ -360,6 +380,7 @@ class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
     splitter: SplitterConfig = field(default_factory=SplitterConfig)
+    cleaner: CleanerConfig = field(default_factory=CleanerConfig)
     log: LogConfig = field(default_factory=LogConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)

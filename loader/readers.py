@@ -235,11 +235,15 @@ class ExcelReader(BaseReader):
 
 
 class CSVReader(BaseReader):
-    """CSV 文档 Reader：将 CSV 转为 Markdown 表格，file_type 标记为 csv。
+    """CSV 文档 Reader：读取 CSV 原始文本，file_type 标记为 csv。
 
-    CSV 本质是表格数据，转 markdown 表格后与 Excel 走相同的 tabular 文体抽取流程。
+    CSV 本质是表格数据，保留原始 CSV 文本格式（逗号分隔，换行为行分隔），
+    由 TableSplitter 用 csv.reader 解析并按数据行切分，每行带表头列名。
+    不转 markdown 表格的原因：TableSplitter 内部用 csv.reader 期望逗号分隔的 CSV 文本，
+    markdown 表格语法（| 分隔）会导致 csv.reader 解析错乱（整行被当作一列）。
+    与 Excel reader 产出格式保持一致（都是 CSV 文本 → TableSplitter）。
+
     编码优先 utf-8-sig（带 BOM）/utf-8，回退 gbk/gb18030（中文 CSV 常用 gbk）。
-    第一行视为表头，生成标准 markdown 表格语法。
     """
 
     suffixes = ("csv",)
@@ -247,38 +251,25 @@ class CSVReader(BaseReader):
     def read(self, path: str, title: str | None = None,
              ocr_images: bool | None = None,
              ocr_backend: str | None = None) -> LoadedDocument:
-        content = self._csv_to_markdown(path)
+        content = self._read_csv(path)
         return LoadedDocument(
             title=title or os.path.basename(path), content=content,
             source_path=path, file_type="csv",
         )
 
     @staticmethod
-    def _csv_to_markdown(path: str) -> str:
-        import csv as _csv
-        text: str | None = None
+    def _read_csv(path: str) -> str:
+        """读取 CSV 文件原始文本，保留逗号分隔格式。
+
+        保留原始 CSV 格式供 TableSplitter 的 csv.reader 解析。
+        不做 markdown 转换、不做列对齐、不做转义——这些由 TableSplitter 负责。
+        """
         for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
             try:
                 with open(path, "r", encoding=enc) as f:
-                    text = f.read()
-                break
+                    return f.read()
             except UnicodeDecodeError:
                 continue
-        if text is None:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-        rows = list(_csv.reader(text.splitlines()))
-        if not rows:
-            return ""
-        header = rows[0]
-        col_count = len(header)
-
-        def _escape(cell: str) -> str:
-            return cell.replace("|", "\\|").replace("\n", " ").strip()
-
-        lines = ["| " + " | ".join(_escape(h) for h in header) + " |"]
-        lines.append("| " + " | ".join("---" for _ in header) + " |")
-        for row in rows[1:]:
-            padded = (row + [""] * col_count)[:col_count]
-            lines.append("| " + " | ".join(_escape(c) for c in padded) + " |")
-        return "\n".join(lines)
+        # 兜底：utf-8 忽略无法解码的字节
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()

@@ -45,7 +45,13 @@ class IngestPipeline:
     def __init__(self, cfg: Config | None = None) -> None:
         self.cfg = cfg or Config()
         self.loader = DocumentLoader.default(config=self.cfg)
-        self.cleaner = TextCleaner()
+        self.cleaner = TextCleaner(
+            strip_html=self.cfg.cleaner.strip_html,
+            merge_hard_breaks=self.cfg.cleaner.merge_hard_breaks,
+            collapse_blank_lines=self.cfg.cleaner.collapse_blank_lines,
+            normalize_whitespace=self.cfg.cleaner.normalize_whitespace,
+            protect_list_items=self.cfg.cleaner.protect_list_items,
+        )
         self.embedder = create_embedder(self.cfg)
         # semantic 模式需要 embed_model，复用已有的 embedder
         embed_model = getattr(self.embedder, '_model', None)
