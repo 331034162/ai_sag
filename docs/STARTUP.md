@@ -192,10 +192,11 @@ SAG_LLM_MAX_RETRIES=3                       # 最大重试次数
 # AISAG_SIMILARITY_THRESHOLD=0.4          # 事件召回/粗排/chunk 召回相似度阈值（默认 0.4）
 # AISAG_ENTITY_EXPAND_ENABLED=true        # 实体向量扩展开关（默认 true，false=仅精确匹配）
 # AISAG_ENTITY_EXPAND_THRESHOLD=0.5       # 实体向量扩展阈值（默认 0.5，独立于事件召回）
-# AISAG_ENTITY_EXPAND_TOPK=20             # 每实体向量召回近邻数（默认 20）
+# AISAG_ENTITY_EXPAND_TOPK=10             # 每实体向量召回近邻数（默认 10）
 # AISAG_MAX_HOPS=2                        # BFS 最大跳数（默认 2）
 # AISAG_SUB_STRATEGY=hopllm               # multi=固定跳数 | hopllm=动态停止（默认）
-# AISAG_HOP_RELEVANCE_THRESHOLD=0.15      # hopllm 停止阈值：新跳最佳分<此值终止（默认 0.15）
+# AISAG_HOP_RELEVANCE_THRESHOLD=0.3       # hopllm 停止阈值：新跳最佳分<此值终止（默认 0.3）
+# AISAG_HOP_EVENT_SOFT_THRESHOLD=0.0      # BFS 扩展事件软过滤阈值（默认 0=禁用，>0 则低于此分不进候选池）
 # AISAG_HOP_SEED_TOPK=8                   # hopllm 每跳保留种子事件数（默认 8）
 # AISAG_FUSION=concat                     # concat=双路拼接 | supplement=事件为主向量补足
 # AISAG_SEED_RECALL=mixed                 # 种子事件向量召回：title | summary | mixed（默认双路）
@@ -212,10 +213,10 @@ SAG_LLM_MAX_RETRIES=3                       # 最大重试次数
 # AISAG_ENTITY_DEGREE_OUTLIER_K=3.0       # mad/tukey 法离群倍数 k（默认 3.0，越大越保守）
 # AISAG_ENTITY_DEGREE_MIN_BATCH=10        # BFS 边界实体最小触发 batch（默认 10，小样本跳过）
 #
-# 种子实体过滤（独立于 BFS，更保守）
-# AISAG_SEED_ENTITY_BUDGET=20             # 种子实体总量硬上限（默认 20）
-# AISAG_SEED_ENTITY_MIN_BATCH=15          # 种子离群检测最小 batch（默认 15）
-# AISAG_SEED_ENTITY_MIN_KEEP=8            # 种子过度过滤保护下限（默认 8）
+# 种子实体过滤（复用 BFS 度数过滤参数，更保守）
+# AISAG_SEED_ENTITY_BUDGET=200            # 种子实体总量硬上限（默认 200，防御性，几乎不触发）
+# 注：种子阶段离群检测复用 AISAG_ENTITY_DEGREE_MIN_BATCH（默认 10）和 AISAG_ENTITY_DEGREE_METHOD
+#     过度过滤保护下限为硬编码 max(min_batch, 5)，不可配置
 #
 # 粗排/精排
 # AISAG_MAX_EVENTS=100                    # 粗排候选事件数 Kcand（默认 100）
@@ -460,10 +461,10 @@ const { answer, sections, trace } = await fetch(`${API_BASE}/api/ask`, {
 | `AISAG_ENTITY_DEGREE_ABS_MAX` | 50 | 度数绝对硬上限 | 所有方法共用兜底，度数>50 的实体直接剔除 |
 | `AISAG_ENTITY_DEGREE_PERCENTILE` | 95 | percentile 法分位点 | 仅 percentile 法生效，剔除最高 5% 枢纽 |
 | `AISAG_ENTITY_DEGREE_OUTLIER_K` | 3.0 | mad/tukey 离群倍数 | k 越大越保守，k≥5 近似关闭 |
-| `AISAG_ENTITY_DEGREE_MIN_BATCH` | 10 | BFS 边界最小触发 batch | 实体数<10 跳过统计检测（小样本不稳） |
-| `AISAG_SEED_ENTITY_BUDGET` | 20 | 种子实体总量硬上限 | 精确匹配+向量扩展去重后上限 |
-| `AISAG_SEED_ENTITY_MIN_BATCH` | 15 | 种子离群检测最小 batch | 比 BFS 更保守（种子样本更小） |
-| `AISAG_SEED_ENTITY_MIN_KEEP` | 8 | 种子过度过滤保护下限 | 过滤后剩余<max(len//2, 8)则回退到 abs_max 结果 |
+| `AISAG_ENTITY_DEGREE_MIN_BATCH` | 10 | BFS 边界最小触发 batch | 实体数<10 跳过统计检测（小样本不稳）；种子阶段复用此参数 |
+| `AISAG_SEED_ENTITY_BUDGET` | 200 | 种子实体总量硬上限 | 精确匹配+向量扩展去重后上限，防御性，几乎不触发 |
+
+> **注**：种子实体阶段不再有独立配置项——离群检测复用 `AISAG_ENTITY_DEGREE_METHOD` / `AISAG_ENTITY_DEGREE_MIN_BATCH`；过度过滤保护下限为硬编码 `max(min_batch, 5)`，不可配置。
 
 ### 9.4 排序与输出参数
 
@@ -500,7 +501,7 @@ const { answer, sections, trace } = await fetch(`${API_BASE}/api/ask`, {
 | BFS 扩展太慢 | ① 减小 `ENTITY_FRONTIER_BUDGET`（如 50）；② 使用 `SUB_STRATEGY=hopllm`（动态提前停止）；③ 降低 `HOP_SEED_TOPK`（如 5） |
 | 上下文不够/答案不全 | 增大 `RERANK_TOP_K`（如 8）、`MAX_SECTIONS`（如 8） |
 | 入库太慢 | ① 开 `EXTRACT_PARALLEL=true`；② 增大 `INGEST_CONCURRENCY`（如 3~4）；③ 关 `GENRE_DETECT=false`（省一次 LLM 调用/文档） |
-| 种子实体被过度过滤/断链 | ① 增大 `SEED_ENTITY_MIN_KEEP`（如 10）；② 增大 `SEED_ENTITY_MIN_BATCH`（如 20，小样本不检测）；③ `ENTITY_DEGREE_METHOD=none`（仅 abs_max 兜底） |
+| 种子实体被过度过滤/断链 | ① 增大 `ENTITY_DEGREE_MIN_BATCH`（如 20，小样本不检测）；② `ENTITY_DEGREE_METHOD=none`（仅 abs_max 兜底）；③ 提高 `ENTITY_DEGREE_ABS_MAX`（如 100） |
 
 ---
 
