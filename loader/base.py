@@ -67,4 +67,4 @@ class DocumentLoader:
         """直接由文本构造文档（跳过文件解析）。"""
         if not content or not content.strip():
             raise LoadError("文档内容为空")
-        return LoadedDocument(title=title, content=content, file_type="text")
+        return LoadedDocument(title=title, content=content, file_type="txt")
