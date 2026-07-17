@@ -1,9 +1,17 @@
 # ============================================================
-# ai-llamaindex 项目依赖 — GPU 完整版
+# ai_sag 项目依赖 — GPU 完整版（自包含，无需叠加 CPU 版）
 # ============================================================
 # 安装方式：
 #   pip install -r requirements-gpu.txt
-# 前提：系统已安装 NVIDIA 驱动 + CUDA Toolkit (推荐 12.x)
+#
+# 前提：
+#   - 系统已安装 NVIDIA 驱动 + CUDA Toolkit（推荐 12.4）
+#   - Python 3.10 ~ 3.12
+#
+# 说明：
+#   本文件已包含全部依赖（CPU 版的全部 + GPU 加速版本），
+#   安装时只需执行一行命令，不要与 requirements.txt 叠加安装。
+#   叠加安装会导致 torch / paddlepaddle / onnxruntime 被反复卸载重装。
 # ============================================================
 
 # PyTorch GPU 需从官方 CUDA 源安装
@@ -12,10 +20,14 @@
 # ------------------------------------------------------------
 # OCR 引擎
 # ------------------------------------------------------------
+# PaddlePaddle GPU 版需从官方源安装，否则会装成 CPU 版
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu124/
+paddlepaddle-gpu>=3.0.0       # PaddlePaddle GPU 后端（PaddleOCR 运行时依赖）
 paddleocr>=3.6.0              # PaddleOCR — 精度高，GPU 可加速
-paddlepaddle-gpu>=3.0.0       # PaddlePaddle GPU 后端（替换自动安装的 CPU 版）
-rapidocr-onnxruntime>=1.4.0   # RapidOCR — ONNX Runtime，CPU 速度快、轻量
-onnxruntime-gpu>=1.18.0       # ONNX Runtime GPU 后端（替换自动安装的 CPU 版）
+
+# RapidOCR 用 onnxruntime-gpu 推理（注意：不要装 rapidocr-onnxruntime，它会自动拉 CPU 版 onnxruntime）
+onnxruntime-gpu>=1.18.0       # ONNX Runtime GPU 后端
+rapidocr-onnxruntime>=1.4.0   # RapidOCR — 基于 ONNX Runtime，CPU 速度快、轻量（GPU 推理时也会用 GPU）
 
 # ------------------------------------------------------------
 # 图像处理
@@ -51,7 +63,7 @@ aiomysql>=0.2.0               # MySQL 异步驱动（全链路异步改造）
 # ------------------------------------------------------------
 # Embedding / 模型推理
 # ------------------------------------------------------------
-torch>=2.6.0                  # PyTorch GPU 版（通过 --extra-index-url 安装 CUDA 版）
+torch>=2.12.0                 # PyTorch GPU 版（通过 --extra-index-url 安装 CUDA 版）
 transformers>=4.40.0          # HuggingFace Transformers（Qwen3 Embedding）
 
 # ------------------------------------------------------------

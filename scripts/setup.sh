@@ -159,13 +159,13 @@ ok "pip 已升级"
 # ---- 安装依赖 ----
 if [ "$ACTION" != "start" ]; then
     step "安装 Python 依赖（$MODE 模式）..."
-    pip install -r "$SRC_DIR/requirements.txt" -q
-    ok "基础依赖安装完成"
-
     if [ "$MODE" = "gpu" ]; then
-        step "安装 GPU 依赖..."
-        pip install -r "$SRC_DIR/requirements-gpu.txt" -q || warn "GPU 依赖安装失败，请手动检查"
+        # GPU 模式：requirements-gpu.txt 已自包含全部依赖，直接安装即可，不要叠加 CPU 版
+        pip install -r "$SRC_DIR/requirements-gpu.txt" -q || { echo -e "${C_RED}[ERROR]${C_RESET} GPU 依赖安装失败，请手动检查"; exit 1; }
         ok "GPU 依赖安装完成"
+    else
+        pip install -r "$SRC_DIR/requirements.txt" -q
+        ok "基础依赖安装完成"
     fi
 fi
 

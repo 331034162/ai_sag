@@ -111,6 +111,12 @@ class EmbeddingConfig:
     bge_model_path: str = field(default_factory=lambda: _env("SAG_BGE_MODEL_PATH", ""))
     qwen3_model_path: str = field(default_factory=lambda: _env("SAG_EMBEDDING_MODEL_PATH", ""))
     device: str = field(default_factory=lambda: _env("SAG_EMBEDDING_DEVICE", "cpu"))
+    # qwen3 tokenizer 最大长度（默认 8192；bge 不走此参数，bge-small-zh-v1.5 自身上限 512）
+    qwen3_max_length: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_MAX_LENGTH", "8192")))
+    # 是否对向量做 L2 归一化（默认 true，适配余弦相似度；向量库用点积或未启用余弦度量时可关闭）
+    normalize: bool = field(default_factory=lambda: _env("SAG_EMBEDDING_NORMALIZE", "true").lower() == "true")
+    # 批处理大小（默认 32，按批送入模型；0=不切批一次性送入，可能 OOM）
+    batch_size: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_BATCH_SIZE", "32")))
 
 
 @dataclass

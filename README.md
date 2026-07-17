@@ -240,9 +240,25 @@ cd your-repo          # 进入仓库根目录（ai_sag_git/）
 conda create -n ai_sag python=3.10
 conda activate ai_sag
 
-# 安装依赖
-pip install -r ai_sag/requirements.txt
+# 安装依赖（二选一，不要叠加安装）
+pip install -r ai_sag/requirements.txt        # CPU 环境
+pip install -r ai_sag/requirements-gpu.txt    # GPU 环境（已自包含全部依赖）
 ```
+
+> **⚠️ 重要：CPU 版与 GPU 版二选一，不要叠加安装**
+>
+> - **CPU 环境**：只装 `requirements.txt`
+> - **GPU 环境**：只装 `requirements-gpu.txt`（**已自包含全部依赖**，无需先装 CPU 版）
+>
+> 叠加安装会导致 `torch` / `paddlepaddle` / `onnxruntime` 被反复卸载重装，浪费带宽且可能产生版本冲突。
+>
+> **GPU 版额外要求**：
+> - 系统已安装 NVIDIA 驱动 + CUDA Toolkit（推荐 12.4）
+> - `requirements-gpu.txt` 已配置 PyTorch 官方 CUDA 源和 PaddlePaddle 官方源，直接 `pip install` 即可
+>
+> **如何选择**：
+> - 不确定或仅测试 → CPU 版（轻量、易装）
+> - 有 NVIDIA GPU 且需大批量入库 / OCR → GPU 版（Embedding 和 OCR 都能显著加速）
 
 ### 3. 准备 MySQL
 
@@ -284,11 +300,12 @@ copy .env.example .env  # Windows
 ```bash
 cd ai_sag/scripts
 
-# 默认 CPU 模式（创建 .venv → pip install → 启动 API + Web UI）
+# 默认 CPU 模式（创建 .venv → pip install requirements.txt → 启动 API + Web UI）
 ./setup.sh                     # Linux / macOS
 setup.bat                      # Windows
 
-# GPU 模式（安装 CUDA 版依赖）
+# GPU 模式（创建 .venv → pip install requirements-gpu.txt → 启动 API + Web UI）
+# 注意：GPU 模式只装 requirements-gpu.txt，不会叠加 CPU 版
 ./setup.sh gpu
 
 # 仅安装依赖
@@ -301,7 +318,7 @@ setup.bat                      # Windows
 ./setup.sh start
 ```
 
-脚本流程：检查 Python 3.10+ → 创建虚拟环境 → 安装依赖 → 首次运行时从 `.env.example` 复制配置模板 → 启动 `api.py` (8777) + `web.py` (8080)。
+脚本流程：检查 Python 3.10+ → 创建虚拟环境 → 安装依赖（CPU/GPU 二选一，不叠加）→ 首次运行时从 `.env.example` 复制配置模板 → 启动 `api.py` (8777) + `web.py` (8080)。
 
 ### 6. 手动启动
 
@@ -396,8 +413,8 @@ your-repo/
 └── ai_sag/
     ├── api.py                  ← FastAPI 后端（端口 8777，15 个端点）
     ├── web.py                  ← Web UI 服务（端口 8080）
-    ├── requirements.txt        ← 依赖清单
-    ├── requirements-gpu.txt    ← GPU 版依赖
+    ├── requirements.txt        ← 依赖清单（CPU 完整版）
+    ├── requirements-gpu.txt    ← 依赖清单（GPU 完整版，自包含，不叠加 CPU 版）
     ├── .env.example            ← 环境变量模板
     ├── .env                    ← 实际配置（不提交 git）
     ├── README.md               ← 项目总览（本文档）

@@ -159,21 +159,21 @@ echo   %C_GREEN%✓%C_RESET% pip 已升级
 if /i "%ACTION%"=="start" goto :skip_install
 
 call :step "安装 Python 依赖（%MODE% 模式）..."
-pip install -r "%SRC_DIR%\requirements.txt" -q
-if %errorlevel% neq 0 (
-    echo %C_RED%[ERROR]%C_RESET% 基础依赖安装失败
-    exit /b 1
-)
-echo   %C_GREEN%✓%C_RESET% 基础依赖安装完成
-
 if /i "%MODE%"=="gpu" (
-    call :step "安装 GPU 依赖..."
+    :: GPU 模式：requirements-gpu.txt 已自包含全部依赖，直接安装即可，不要叠加 CPU 版
     pip install -r "%SRC_DIR%\requirements-gpu.txt" -q
     if %errorlevel% neq 0 (
-        echo %C_YELLOW%[WARN]%C_RESET% GPU 依赖安装失败，请手动检查
-    ) else (
-        echo   %C_GREEN%✓%C_RESET% GPU 依赖安装完成
+        echo %C_RED%[ERROR]%C_RESET% GPU 依赖安装失败，请手动检查
+        exit /b 1
     )
+    echo   %C_GREEN%✓%C_RESET% GPU 依赖安装完成
+) else (
+    pip install -r "%SRC_DIR%\requirements.txt" -q
+    if %errorlevel% neq 0 (
+        echo %C_RED%[ERROR]%C_RESET% 基础依赖安装失败
+        exit /b 1
+    )
+    echo   %C_GREEN%✓%C_RESET% 基础依赖安装完成
 )
 
 :skip_install

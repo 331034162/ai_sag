@@ -1,14 +1,15 @@
 # ============================================================
-# ai-llamaindex 项目依赖
+# ai_sag 项目依赖 — CPU 完整版
 # ============================================================
 # 安装方式：
 #   CPU 环境：pip install -r requirements.txt
-#   GPU 环境：pip install -r requirements.txt -r requirements-gpu.txt
+#   GPU 环境：pip install -r requirements-gpu.txt（已自包含全部依赖，无需叠加 CPU 版）
 # ============================================================
 
 # ------------------------------------------------------------
 # OCR 引擎（二选一或都装）
 # ------------------------------------------------------------
+paddlepaddle>=3.0.0           # PaddlePaddle CPU 后端（PaddleOCR 运行时依赖）
 paddleocr>=3.6.0              # PaddleOCR — 精度高，GPU 可加速，CPU 较慢
 rapidocr-onnxruntime>=1.4.0   # RapidOCR — 基于 ONNX Runtime，CPU 速度快、轻量
 
@@ -46,7 +47,7 @@ aiomysql>=0.2.0               # MySQL 异步驱动（全链路异步改造）
 # ------------------------------------------------------------
 # Embedding / 模型推理
 # ------------------------------------------------------------
-torch>=2.0.0                  # PyTorch — GPU 版见 requirements-gpu.txt
+torch>=2.12.0                 # PyTorch CPU 版（GPU 版见 requirements-gpu.txt）
 transformers>=4.40.0          # HuggingFace Transformers（Qwen3 Embedding）
 
 # ------------------------------------------------------------
