@@ -123,10 +123,10 @@
   <!-- 上传 -->
   <div class="panel">
     <h2>📤 文档上传 <span class="badge">文件</span></h2>
-    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls,.csv" onchange="onFilePicked()" />
-    <div class="hint">支持 .md / .txt / .docx / .pdf / .xlsx / .csv</div>
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.docx,.pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.bmp,.tiff,.tif,.webp" onchange="onFilePicked()" />
+    <div class="hint">支持 .md / .txt / .docx / .pdf / .xlsx / .csv / .png / .jpg / .jpeg / .bmp / .tiff / .webp</div>
     <div id="ocrOptions" style="margin-top:8px;display:none;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--panel2)">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
+      <label id="ocrCheckboxLabel" style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
         <input type="checkbox" id="ocrImages" checked onchange="onOcrToggle()" />
         <span>图片 OCR 识别（提取内嵌图片文字，关闭可加快入库）</span>
       </label>
@@ -375,11 +375,22 @@ function loadDetailId(id){ document.getElementById('detailId').value = id; loadD
 function onFilePicked() {
   const f = document.getElementById('fileInput').files[0];
   const box = document.getElementById('ocrOptions');
+  const checkboxLabel = document.getElementById('ocrCheckboxLabel');
+  const checkbox = document.getElementById('ocrImages');
   if (!f) { box.style.display = 'none'; return; }
   const suf = (f.name.split('.').pop() || '').toLowerCase();
-  // 仅 docx / pdf 有内嵌图片，才展示 OCR 选项；其余格式隐藏
-  const show = (suf === 'docx' || suf === 'pdf');
+  // docx/pdf 有内嵌图片、图片文件本身需要 OCR，展示 OCR 选项；其余格式隐藏
+  const imageExts = ['png','jpg','jpeg','bmp','tiff','tif','webp'];
+  const isImage = imageExts.includes(suf);
+  const show = (suf === 'docx' || suf === 'pdf' || isImage);
   box.style.display = show ? '' : 'none';
+  // 图片文件：隐藏勾选框（OCR 是必须的），自动勾选；docx/pdf：显示勾选框
+  if (isImage) {
+    checkboxLabel.style.display = 'none';
+    checkbox.checked = true;
+  } else {
+    checkboxLabel.style.display = '';
+  }
   if (show) onOcrToggle(); // 同步引擎行的显隐
 }
 
@@ -402,12 +413,13 @@ async function uploadFile() {
   const fd = new FormData();
   fd.append('file', f);
   fd.append('ocr_images', ocrOn ? 'true' : 'false');
-  // 仅 docx/pdf 才传引擎；其余格式不传（后端会忽略，且避免误导日志）
+  // docx/pdf/图片 才传引擎；其余格式不传（后端会忽略，且避免误导日志）
   const suf = (f.name.split('.').pop() || '').toLowerCase();
-  if (suf === 'docx' || suf === 'pdf') {
+  const imageExts = ['png','jpg','jpeg','bmp','tiff','tif','webp'];
+  if (suf === 'docx' || suf === 'pdf' || imageExts.includes(suf)) {
     fd.append('ocr_backend', backend);
   }
-  const tip = ocrOn && (suf === 'docx' || suf === 'pdf')
+  const tip = ocrOn && (suf === 'docx' || suf === 'pdf' || imageExts.includes(suf))
     ? `上传中（${backend === 'paddleocr' ? 'PaddleOCR' : 'RapidOCR'}，较慢）...`
     : '上传中...';
   toast(tip);

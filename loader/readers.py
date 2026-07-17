@@ -1,4 +1,4 @@
-"""各格式 Reader 实现：md/txt/docx/pdf/xlsx。"""
+"""各格式 Reader 实现：md/txt/docx/pdf/xlsx/csv/image。"""
 from __future__ import annotations
 
 import os
@@ -273,3 +273,49 @@ class CSVReader(BaseReader):
         # 兜底：utf-8 忽略无法解码的字节
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
+
+
+class ImageReader(BaseReader):
+    """图片文档 Reader：使用 doc_parser/image OCR 识别文字，file_type 标记为 image。
+
+    支持 png/jpg/jpeg/bmp/tiff/tif/webp 格式。
+    OCR 后产出纯文本，走 sentence/semantic 切分（与 txt/docx 相同流程）。
+    """
+
+    suffixes = ("png", "jpg", "jpeg", "bmp", "tiff", "tif", "webp")
+
+    def __init__(self, doc_parser_config=None) -> None:
+        self._doc_parser_config = doc_parser_config
+
+    def read(self, path: str, title: str | None = None,
+             ocr_images: bool | None = None,
+             ocr_backend: str | None = None) -> LoadedDocument:
+        try:
+            from ai_sag.doc_parser.image import ImageParser
+        except ImportError as e:
+            raise LoadError("缺少 doc_parser.image 依赖，请确认安装：pip install opencv-python rapidocr-onnxruntime") from e
+
+        # 从配置读取 OCR 后端，未配置时用 rapidocr（轻量）
+        backend = "rapidocr"
+        if ocr_backend is not None:
+            backend = ocr_backend
+        elif self._doc_parser_config is not None:
+            backend = getattr(self._doc_parser_config, "ocr_backend", "rapidocr") or "rapidocr"
+
+        try:
+            parser = ImageParser(ocr_backend=backend, preprocess=True,
+                                 detect_watermark=False, detect_stamp=False)
+            result = parser.parse(path)
+        except Exception as e:
+            raise LoadError(f"图片 OCR 解析失败: {e}") from e
+
+        content = result.ocr_text or ""
+        return LoadedDocument(
+            title=title or os.path.basename(path), content=content,
+            source_path=path, file_type="image",
+            metadata={
+                "ocr_backend": backend,
+                "has_watermark": result.has_watermark,
+                "has_stamp": result.has_stamp,
+            },
+        )

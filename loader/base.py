@@ -36,7 +36,7 @@ class DocumentLoader:
 
     @classmethod
     def default(cls, config=None) -> "DocumentLoader":
-        from .readers import CSVReader, DocxReader, ExcelReader, MarkdownReader, PDFReader, TextReader
+        from .readers import CSVReader, DocxReader, ExcelReader, ImageReader, MarkdownReader, PDFReader, TextReader
         loader = cls()
         loader.register(MarkdownReader())
         loader.register(TextReader())
@@ -47,6 +47,7 @@ class DocumentLoader:
         loader.register(PDFReader(doc_parser_config=doc_parser_config))
         loader.register(ExcelReader(doc_parser_config=doc_parser_config))
         loader.register(CSVReader())
+        loader.register(ImageReader(doc_parser_config=doc_parser_config))
         return loader
 
     def load(self, path: str, title: str | None = None,
@@ -57,7 +58,7 @@ class DocumentLoader:
         suf = Path(path).suffix.lower().lstrip(".")
         reader = self._readers.get(suf)
         if reader is None:
-            raise LoadError(f"不支持的文件类型: .{suf}（支持 .md/.txt/.docx/.pdf/.xlsx/.csv）"
+            raise LoadError(f"不支持的文件类型: .{suf}（支持 .md/.txt/.docx/.pdf/.xlsx/.csv/.png/.jpg/.jpeg/.bmp/.tiff/.tif/.webp）"
                             + (f"；.xls 请先转换为 .xlsx 或 .csv" if suf == "xls" else ""))
         if title is None:
             title = Path(path).stem
