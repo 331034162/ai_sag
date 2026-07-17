@@ -256,8 +256,8 @@ def create_app() -> FastAPI:
         ocr_backend: str | None = Form(None, description="OCR 引擎：rapidocr/paddleocr，留空用配置默认"),
     ):
         suffix = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
-        if suffix not in ("md", "markdown", "txt", "docx", "pdf", "xlsx", "xls"):
-            raise HTTPException(400, f"不支持的文件类型: .{suffix}（支持 .md/.txt/.docx/.pdf/.xlsx）")
+        if suffix not in ("md", "markdown", "txt", "docx", "pdf", "xlsx", "xls", "csv"):
+            raise HTTPException(400, f"不支持的文件类型: .{suffix}（支持 .md/.txt/.docx/.pdf/.xlsx/.csv）")
         raw = await file.read()
         if not raw:
             raise HTTPException(400, "文件内容为空")
@@ -432,7 +432,7 @@ def create_app() -> FastAPI:
         入库失败不影响旧数据可用性。
         """
         suffix = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
-        if suffix not in ("md", "markdown", "txt", "docx", "pdf", "xlsx", "xls"):
+        if suffix not in ("md", "markdown", "txt", "docx", "pdf", "xlsx", "xls", "csv"):
             raise HTTPException(400, f"不支持的文件类型: .{suffix}")
         raw = await file.read()
         if not raw:
