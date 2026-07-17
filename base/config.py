@@ -172,7 +172,7 @@ class SearchConfig:
     # 默认 10：配合 seed_entity_min_batch=15，单实体 10 个近邻 + 精确匹配即可触发离群检测；
     # 多实体场景去重后更容易达到 min_batch，让度数过滤统计量更稳
     entity_expand_topk: int = field(
-        default_factory=lambda: int(_env("AISAG_ENTITY_EXPAND_TOPK", "20")))
+        default_factory=lambda: int(_env("AISAG_ENTITY_EXPAND_TOPK", "10")))
     # 实体向量扩展开关（默认开启）：
     #   true  - 用 LLM 抽取的实体名 embedding 去向量库找近邻，补充同义词/相关实体
     #   false - 仅用精确匹配（SQL 按名字查），不从向量库扩展实体
@@ -183,9 +183,19 @@ class SearchConfig:
     max_hops: int = field(default_factory=lambda: int(_env("AISAG_MAX_HOPS", "2")))
     # 多跳扩展子策略：multi（固定跳数）/ hopllm（每跳相似度动态停止）
     sub_strategy: str = field(default_factory=lambda: _env("AISAG_SUB_STRATEGY", "hopllm").lower())
-    # hopllm 动态停止：新跳事件内容相似度低于此值则终止扩展
+    # hopllm 动态停止：新跳事件 summary 相似度低于此值则终止扩展
+    # （改用 summary 打分后分数普遍高于 content，0.15 形同虚设，上调至 0.3）
     hop_relevance_threshold: float = field(
-        default_factory=lambda: float(_env("AISAG_HOP_RELEVANCE_THRESHOLD", "0.15")))
+        default_factory=lambda: float(_env("AISAG_HOP_RELEVANCE_THRESHOLD", "0.3")))
+    # BFS 扩展事件软过滤阈值（默认 0 禁用）：每跳扩展事件的 summary 分数低于此值则不 track
+    # 作用：减少粗排/精排候选规模，剔除 BFS 扩展噪声
+    # 与 hop_relevance_threshold 的区别：
+    #   - soft_threshold 控制单事件是否进候选池（< 阈值的不 track）
+    #   - hop_relevance_threshold 控制是否继续扩展（best_score < 阈值则停止 BFS）
+    # 关系：soft_threshold <= hop_relevance_threshold（软过滤更宽松，停止信号更严格）
+    # 被剔除的事件会加入 tracked_events 避免重新召回，但无深度记录不进候选池
+    hop_event_soft_threshold: float = field(
+        default_factory=lambda: float(_env("AISAG_HOP_EVENT_SOFT_THRESHOLD", "0.0")))
     # hopllm 每跳重排后保留的种子事件数（对齐旧版 topK 剪枝）
     hop_seed_topk: int = field(default_factory=lambda: int(_env("AISAG_HOP_SEED_TOPK", "8")))
     # BFS 扩展每跳边界实体数量上限（论文 Section 4.4：entity frontier pruning budget=100）
@@ -237,20 +247,13 @@ class SearchConfig:
         default_factory=lambda: float(_env("AISAG_ENTITY_DEGREE_OUTLIER_K", "3.0")))
     # 度数离群检测的最小 batch 大小。
     # 当边界实体数 < 此值时不执行统计检测（小样本统计量不稳定，容易误杀），
-    # 此时仅靠绝对上限兜底。设为 1 则永不跳过。
+    # 此时仅靠绝对上限兜底。设为 1 则永不跳过。BFS 边界过滤和种子实体过滤共用此值。
     entity_degree_min_batch: int = field(
         default_factory=lambda: int(_env("AISAG_ENTITY_DEGREE_MIN_BATCH", "10")))
-    # 种子实体总量上限：精确匹配+向量扩展合并去重后的硬上限，防止 LLM 抽太多撑爆种子事件池
+    # 种子实体候选总量防御性上限：精确匹配+向量扩展合并去重后的硬上限
+    # 实际候选数 = LLM抽实体数 × (1精确 + 10向量扩展) ≈ 30-50，几乎不触发，纯防御目的
     seed_entity_budget: int = field(
-        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_BUDGET", "20")))
-    # 种子实体离群检测触发下限：种子 batch < 此值时跳过离群检测，仅靠绝对上限兜底
-    # 比 BFS 的 entity_degree_min_batch 更保守，因种子样本更小、统计量更不稳
-    seed_entity_min_batch: int = field(
-        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_MIN_BATCH", "15")))
-    # 种子实体过度过滤保护下限：离群检测后若剩余数 < max(len//2, 此值) 则回退到 abs_max 结果
-    # 比 BFS 的 5 更高，因种子实体更宝贵，断链代价更大
-    seed_entity_min_keep: int = field(
-        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_MIN_KEEP", "8")))
+        default_factory=lambda: int(_env("AISAG_SEED_ENTITY_BUDGET", "200")))
     # 粗排相似度阈值（设为 0 则关闭，对齐旧版仅排序截断）
     coarse_threshold: float = field(
         default_factory=lambda: float(_env("AISAG_COARSE_THRESHOLD", "0")))

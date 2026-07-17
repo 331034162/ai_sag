@@ -147,7 +147,8 @@ class SagRetriever:
         entity_ids: list[str] = []
         seed_degree_rejected: set[str] = set()
         if query_entities:
-            entity_ids, seed_degree_rejected = await self._recall_entities(query_entities, source_ids)
+            entity_ids, seed_degree_rejected = await self._recall_entities(
+                query_entities, source_ids)
         trace.expanded_query_entities = entity_ids  # 记录 Ûq
 
         entity_event_ids = (await self.db.get_event_ids_by_entity_ids(entity_ids, source_ids)
@@ -183,7 +184,7 @@ class SagRetriever:
             seed_degree_rejected=seed_degree_rejected)
         trace.expanded_event_ids = expanded_ids
 
-        # 6. 粗排（复用 Path B 已有分数，省去重复拉 embedding）
+        # 6. 粗排（统一用 content 向量打分；path_b_scores 仅透传供观测日志对照）
         ranked_ids, coarse_scores = await self._coarse_rank(
             expanded_ids, query_vec, source_ids, pre_scores=path_b_scores)
         # 兜底：如果所有事件都没有向量（极端情况），保留扩展集前 N 个
@@ -309,7 +310,7 @@ class SagRetriever:
             return []
 
     async def _recall_entities(self, names: list[str],
-                               source_ids: list[str] | None
+                               source_ids: list[str] | None,
                                ) -> tuple[list[str], set[str]]:
         exact = await self.db.search_entities_by_name(names, source_ids)
         exact_ids = [e.id for e in exact]
@@ -345,24 +346,23 @@ class SagRetriever:
             return [], set()
         filtered_ids = await self.db.filter_entity_ids_by_sources(candidate_ids, source_ids)
         # === 种子实体度数过滤 ===
-        # 与 BFS 边界过滤的区别：不用综合评分截断（向量扩展已筛 sim），
-        # 离群检测用更保守的 min_batch，过度过滤保护用更高的 min_keep
+        # 与 BFS 边界过滤共用 entity_degree_min_batch
         degree_rejected: set[str] = set()
-        budget = self.cfg.search.seed_entity_budget
-        if len(filtered_ids) > budget:
-            filtered_ids = filtered_ids[:budget]
+        if len(filtered_ids) > self.cfg.search.seed_entity_budget:
+            filtered_ids = filtered_ids[:self.cfg.search.seed_entity_budget]
         abs_max = self.cfg.search.entity_degree_abs_max
         method = self.cfg.search.entity_degree_method
         if abs_max > 0 and filtered_ids:
             degrees = await self.db.get_entity_degrees(filtered_ids)
             after_abs = [eid for eid in filtered_ids if degrees.get(eid, 0) <= abs_max]
             abs_rejected = set(filtered_ids) - set(after_abs)
-            min_batch = self.cfg.search.seed_entity_min_batch
+            min_batch = self.cfg.search.entity_degree_min_batch
             if method != "none" and len(after_abs) >= min_batch:
                 deg_vals = [degrees.get(eid, 0) for eid in after_abs]
                 threshold, _ = self._compute_degree_threshold(deg_vals, method)
                 after_method = [eid for eid in after_abs if degrees.get(eid, 0) <= threshold]
-                min_keep = max(len(filtered_ids) // 2, self.cfg.search.seed_entity_min_keep)
+                # 过度过滤保护线：度数过滤后至少保留 min_batch 个实体
+                min_keep = max(min_batch, 5)
                 if len(after_method) < min_keep and abs_rejected:
                     result_ids = after_abs
                 else:
@@ -397,7 +397,7 @@ class SagRetriever:
                       source_ids: list[str] | None,
                       query_vec: list[float],
                       event_cache: dict[str, object] | None = None,
-                      seed_degree_rejected: set[str] | None = None
+                      seed_degree_rejected: set[str] | None = None,
                       ) -> tuple[list[str], dict[str, int]]:
         """沿 event_entities 超边做 BFS 多跳扩展。
 
@@ -424,7 +424,6 @@ class SagRetriever:
         # 目的是避免 BFS 重复去查这些实体的事件——它们的事件关联已在种子召回阶段处理过。
         # seed_degree_rejected 一并加入：种子阶段被度数剔除的 hub 不应在 BFS 重新评估
         # （度数是固有属性，不随 batch 变化，重评只会浪费算力且可能误通过）。
-        # 仅用于 BFS 去重，不记录深度。
         tracked_entities: set[str] = set(initial_entity_ids) | (seed_degree_rejected or set())
         current_event_ids = list(seed_ids)
 
@@ -491,15 +490,47 @@ class SagRetriever:
                      hop,
                      [new_ent_names.get(eid, "?") for eid in new_entities[:20]],
                      bfs_brief)
-            tracked_events.update(new_event_ids)
-            # 记录事件深度：BFS hop=0 发现的新事件 depth=1，hop=1 depth=2 ...
-            for ev_id in new_event_ids:
-                event_depth_map[ev_id] = hop + 1
-
-            if self.cfg.search.sub_strategy == "hopllm":
-                emb_map = await self.vectors.aget_embeddings("event_contents", new_event_ids)
+            # 软过滤：用 summary 分数剔除低质扩展事件，减少粗排/精排候选规模
+            # 顺序调整：先打分 → 软过滤 → track → 选种子（原代码是先 track 后打分，导致零过滤）
+            soft_threshold = self.cfg.search.hop_event_soft_threshold
+            if soft_threshold > 0 and query_vec is not None and new_event_ids:
+                emb_map = await self.vectors.aget_embeddings("event_summaries", new_event_ids)
                 scored = self._cosine_scores(query_vec, new_event_ids, emb_map)
                 scored.sort(key=lambda x: x[1], reverse=True)
+                qualified_ids = [eid for eid, s in scored if s >= soft_threshold]
+                rejected_ids = [eid for eid, s in scored if s < soft_threshold]
+                soft_brief = [{"title": (new_ev_map[eid].title or "")[:40] if eid in new_ev_map else "?",
+                               "score": round(s, 4),
+                               "keep": s >= soft_threshold}
+                              for eid, s in scored]
+                log.info("[观测] BFS第{}跳 软过滤 输入={} 保留={} 剔除={} 阈值={} 明细={}",
+                         hop, len(new_event_ids), len(qualified_ids), len(rejected_ids),
+                         soft_threshold, soft_brief)
+                # 只 track 达标的（有深度记录，进候选池）
+                tracked_events.update(qualified_ids)
+                for ev_id in qualified_ids:
+                    event_depth_map[ev_id] = hop + 1
+                # 被剔除的也加入 tracked_events，避免 BFS 重新召回（但无深度记录，不进候选）
+                tracked_events.update(rejected_ids)
+                # 若软过滤后无达标事件，停止扩展
+                if not qualified_ids:
+                    log.info("BFS第{}跳 软过滤后无达标事件，终止扩展", hop)
+                    break
+                new_event_ids = qualified_ids  # 后续 hopllm/选种子基于达标事件
+            else:
+                # 软过滤禁用：全盘 track（原行为）
+                tracked_events.update(new_event_ids)
+                for ev_id in new_event_ids:
+                    event_depth_map[ev_id] = hop + 1
+
+            if self.cfg.search.sub_strategy == "hopllm":
+                # 用 summary 向量打分（LLM 提炼的事件核心语义，区分度优于 content 长文本），
+                # 与粗排的 content 信号形成分工，避免同一信号在 BFS 选种和粗排排序中重复使用
+                # 注意：若软过滤已启用，此处复用其打分结果（scored 已算过）
+                if soft_threshold <= 0 or query_vec is None or not new_event_ids:
+                    emb_map = await self.vectors.aget_embeddings("event_summaries", new_event_ids)
+                    scored = self._cosine_scores(query_vec, new_event_ids, emb_map)
+                    scored.sort(key=lambda x: x[1], reverse=True)
                 if not scored:
                     log.info("BFS第{}跳 hopllm评分无结果，终止", hop)
                     break
@@ -535,7 +566,8 @@ class SagRetriever:
                  len(tracked_events), len(seed_ids),
                  {f"depth{d}": sum(1 for v in event_depth_map.values() if v == d)
                   for d in sorted(set(event_depth_map.values()))})
-        return list(tracked_events), event_depth_map
+        # 返回有效事件（有深度记录的）
+        return list(event_depth_map.keys()), event_depth_map
 
     @staticmethod
     def _degree_threshold_percentile(degree_values: list[int], pct: float) -> float:
@@ -771,20 +803,15 @@ class SagRetriever:
         排序后过滤低于 coarse_threshold 的事件，再截断到 top max_events。
         阈值默认 0.15，设为 0 则只排序截断不做阈值过滤。
 
-        pre_scores：Path B 种子召回已算出的分数，复用避免重复拉 embedding。
+        pre_scores 仅用于观测日志对照（记录种子召回原分数），不参与粗排排序——
+        因为种子召回分数来自 title/summary 向量，与粗排使用的 content 向量尺度不一致，
+        混用会导致种子事件与 BFS 扩展事件排序不可比。粗排统一用 content 向量重算。
         """
         if not event_ids:
             return [], {}
-        pre_scores = pre_scores or {}
-        # 拆分：已有分数的事件直接复用，没有的才拉 embedding 计算
-        pre_scored = [(eid, pre_scores[eid]) for eid in event_ids if eid in pre_scores]
-        new_ids = [eid for eid in event_ids if eid not in pre_scores]
-        if new_ids:
-            emb_map = await self.vectors.aget_embeddings("event_contents", new_ids)
-            new_scored = self._cosine_scores(query_vec, new_ids, emb_map)
-        else:
-            new_scored = []
-        scored = pre_scored + new_scored
+        # 统一用 event_content 向量打分，保证所有事件在同一尺度下排序
+        emb_map = await self.vectors.aget_embeddings("event_contents", event_ids)
+        scored = self._cosine_scores(query_vec, event_ids, emb_map)
         # 过滤掉完全无向量的事件（分数为0），避免纯噪声进入精排
         scored = [(eid, s) for eid, s in scored if s > 0]
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -794,13 +821,15 @@ class SagRetriever:
             scored = [(eid, s) for eid, s in scored if s >= threshold]
         scored = scored[: self.cfg.search.max_events]
         score_map = {eid: s for eid, s in scored}
-        # 观测日志：粗排结果明细（标题+文件名+分数）
+        # 观测日志：粗排结果明细（标题+文件名+分数），并对照种子召回原分数
+        pre_scores = pre_scores or {}
         if scored:
             coarse_ev_map = {ev.id: ev for ev in
                              await self.db.get_events_by_ids([eid for eid, _ in scored], source_ids)}
             coarse_src_ids = {ev.source_id for ev in coarse_ev_map.values()}
             coarse_src_names = await self.db.get_source_names_by_ids(list(coarse_src_ids))
             coarse_brief = [{"score": round(s, 4),
+                             "seed_score": round(pre_scores.get(eid, 0.0), 4) if eid in pre_scores else None,
                              "title": (coarse_ev_map[eid].title or "")[:50],
                              "source": coarse_src_names.get(coarse_ev_map[eid].source_id, "?")}
                             for eid, s in scored if eid in coarse_ev_map]
