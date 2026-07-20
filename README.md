@@ -286,7 +286,8 @@ copy .env.example .env  # Windows
 |------|------|------|
 | `SAG_MYSQL_PASSWORD` | MySQL 密码 | `your_password` |
 | `SAG_LLM_PROFILE_<场景>_LLM_NAME` | 各场景选用的 profile 名（6 个场景必填） | `deepseek_chat` |
-| `SAG_BGE_MODEL_PATH` | BGE 模型本地路径 | `/models/bge-small-zh-v1.5` |
+| `SAG_EMBEDDING_BACKEND` | Embedding 后端（`bge` / `qwen3`） | `bge` |
+| `SAG_EMBEDDING_MODEL_PATH` | Embedding 模型本地路径（两种后端共用） | `/models/bge-small-zh-v1.5` |
 
 > **LLM 连接信息**：`api_key` / `base_url` / `model` 等直接写在 `llm_profiles.yaml` 中（参考 `llm_profiles.yaml.example` 创建，文件已在 `.gitignore` 中）。后端由 factory 按 `profile.model` 自动判断，无需配置。
 
@@ -391,7 +392,7 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 
 | 组件 | 可选后端 | 配置方式（`.env` 中） |
 |------|---------|----------------------|
-| Embedding | `bge`（默认）/ `qwen3` | `SAG_EMBEDDING_BACKEND` |
+| Embedding | `bge`（默认，CLS pooling）/ `qwen3`（last_token pooling + 查询指令前缀） | `SAG_EMBEDDING_BACKEND` + `SAG_EMBEDDING_MODEL_PATH` |
 | LLM | `openai_like` / `openai`（按 profile.model 自动判断） | 无需配置 |
 | OCR 引擎 | `rapidocr`（默认，轻量）/ `paddleocr`（高精度） | `AISAG_DOC_OCR_BACKEND` |
 | OCR 开关 | `true`（默认，OCR图片）/ `false`（不OCR，入库更快） | `AISAG_DOC_OCR_IMAGES` |

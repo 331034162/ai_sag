@@ -79,8 +79,8 @@ class SagRetriever:
             log.info("查询重写 raw={!r} -> rewritten={!r}", query, rewritten)
         eff_query = rewritten or query
 
-        # 用重写后的 query 生成向量
-        query_vec = await self.embedder.aembed_text(eff_query)
+        # 用重写后的 query 生成向量（qwen3 等指令模型会自动加查询前缀）
+        query_vec = await self.embedder.aembed_query(eff_query)
 
         # 1. 提取查询实体 + 3. 种子事件向量召回（并发执行，无依赖关系）
         query_entities_task = self._extract_query_entities(eff_query)

@@ -139,13 +139,12 @@ SAG_MYSQL_PASSWORD=your_password  # 密码 ← 改成你自己的
 # ============================================================
 # 2. Embedding 模型
 # ============================================================
-# 后端选择：bge（推荐，轻量稳定） 或 qwen3
+# 后端选择：bge（默认，CLS pooling，轻量稳定） 或 qwen3（last_token pooling + 查询指令前缀）
 SAG_EMBEDDING_BACKEND=bge
-SAG_EMBEDDING_DEVICE=cpu          # cpu 或 cuda
-# bge 模型本地路径（如果使用 bge 后端）← 改成你自己的路径
-SAG_BGE_MODEL_PATH=/path/to/bge-small-zh-v1.5
-# qwen3 模型本地路径（如果使用 qwen3 后端）
-# SAG_EMBEDDING_MODEL_PATH=/path/to/Qwen3-Embedding-0.6B
+# 模型本地路径（两种后端共用此变量，切后端时同步修改路径）
+#   bge:   下载 bge-small-zh-v1.5（modelscope download --model AI-ModelScope/bge-small-zh-v1.5）
+#   qwen3: 下载 Qwen3-Embedding-0.6B（modelscope download --model Qwen/Qwen3-Embedding-0.6B）
+SAG_EMBEDDING_MODEL_PATH=/path/to/bge-small-zh-v1.5
 
 # ============================================================
 # 3. LLM 大模型（多场景配置：配合 llm_profiles.yaml）
@@ -413,7 +412,7 @@ const { answer, sections, trace } = await fetch(`${API_BASE}/api/ask`, {
 
 | 组件 | 配置项 | 可选值 |
 |------|--------|--------|
-| Embedding | `SAG_EMBEDDING_BACKEND` | `bge` / `qwen3` |
+| Embedding | `SAG_EMBEDDING_BACKEND` + `SAG_EMBEDDING_MODEL_PATH` | `bge`（默认）/ `qwen3` |
 | LLM | 无（按 profile.model 自动判断） | `openai_like` / `openai` |
 | 向量库 | `AISAG_VECTOR_STORE_BACKEND` | `chroma` |
 | 切分器 | `AISAG_SPLITTER_MODE` | `semantic`（默认）/ `auto` / `markdown` / `sentence` |
@@ -547,13 +546,18 @@ pip install -r requirements.txt
 
 ### Q4：Embedding 模型加载失败
 
-确认 `.env` 中 `SAG_BGE_MODEL_PATH`（或 `SAG_EMBEDDING_MODEL_PATH`）指向的目录存在，且包含模型文件（`config.json`、`pytorch_model.bin` / `model.safetensors` 等）。
+确认 `.env` 中 `SAG_EMBEDDING_MODEL_PATH` 指向的目录存在，且包含模型文件（`config.json`、`pytorch_model.bin` / `model.safetensors` 等）。
 
 从 ModelScope 下载示例：
 ```bash
 pip install modelscope
 python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-small-zh-v1.5')"
 ```
+
+> **`The size of tensor a (xxx) must match the size of tensor b (512)` 报错**：
+> 原因是 `bge-small-zh-v1.5` 位置编码硬上限为 512，输入 chunk 超长。
+> 已修复：bge 后端会自动读取 `max_position_embeddings` 并把 `max_length` 压缩到模型上限。
+> 若 chunk 大量超过 512 tokens，建议调小 `AISAG_CHUNK_SIZE` 或切换到 `qwen3` 后端（支持 8192）。
 
 ### Q5：LLM API 返回错误
 

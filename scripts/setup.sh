@@ -129,7 +129,7 @@ vars = {
     'SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME': '查询重写场景 profile 名',
     'SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME': '实体抽取场景 profile 名',
     'SAG_LLM_PROFILE_RERANK_LLM_NAME': '重排场景 profile 名',
-    'SAG_BGE_MODEL_PATH': 'Embedding模型路径'
+    'SAG_EMBEDDING_MODEL_PATH': 'Embedding模型路径'
 }
 missing = [(k, d) for k, d in vars.items() if not os.environ.get(k)]
 if missing:
@@ -193,7 +193,7 @@ if [ ! -f "$SRC_DIR/.env" ]; then
     echo ""
     echo "     1. MySQL 连接信息（SAG_MYSQL_*）"
     echo "     2. LLM API Key 及地址（SAG_LLM_*）"
-    echo "     3. Embedding 模型路径（SAG_BGE_MODEL_PATH）"
+    echo "     3. Embedding 模型路径（SAG_EMBEDDING_MODEL_PATH）"
     echo ""
     echo "   文件位置: $SRC_DIR/.env"
     echo -e "  ${C_BOLD}============================================${C_RESET}"

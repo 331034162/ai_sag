@@ -192,7 +192,7 @@ if not exist "%SRC_DIR%\.env" (
     echo.
     echo     1. MySQL 连接信息（SAG_MYSQL_*）
     echo     2. LLM API Key 及地址（SAG_LLM_*）
-    echo     3. Embedding 模型路径（SAG_BGE_MODEL_PATH）
+    echo     3. Embedding 模型路径（SAG_EMBEDDING_MODEL_PATH）
     echo.
     echo   文件位置: %SRC_DIR%\.env
     echo   %C_BOLD%============================================%C_RESET%
@@ -276,11 +276,11 @@ if "%ENV_PATH%"=="NOT_FOUND" (
 )
 
 :: 检查 MySQL 连接 + LLM 场景 + Embedding
-python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','SAG_LLM_PROFILE_ANSWER_LLM_NAME','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_RERANK_LLM_NAME','SAG_BGE_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
+python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','SAG_LLM_PROFILE_ANSWER_LLM_NAME','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_RERANK_LLM_NAME','SAG_EMBEDDING_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo   %C_YELLOW%⚠%C_RESET% 部分配置可能未填写，请检查 .env：
-    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','SAG_LLM_PROFILE_ANSWER_LLM_NAME':'答案生成场景 profile 名','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME':'体裁分类场景 profile 名','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME':'事件抽取场景 profile 名','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME':'查询重写场景 profile 名','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME':'实体抽取场景 profile 名','SAG_LLM_PROFILE_RERANK_LLM_NAME':'重排场景 profile 名','SAG_BGE_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
+    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','SAG_LLM_PROFILE_ANSWER_LLM_NAME':'答案生成场景 profile 名','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME':'体裁分类场景 profile 名','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME':'事件抽取场景 profile 名','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME':'查询重写场景 profile 名','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME':'实体抽取场景 profile 名','SAG_LLM_PROFILE_RERANK_LLM_NAME':'重排场景 profile 名','SAG_EMBEDDING_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
     echo.
 )
 

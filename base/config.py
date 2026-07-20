@@ -6,7 +6,7 @@
 
 配置结构：
     cfg.mysql.host / cfg.mysql.port ...
-    cfg.embedding.backend / cfg.embedding.bge_model_path ...
+    cfg.embedding.backend / cfg.embedding.model_path ...
     cfg.llm_scenes["ANSWER"].profile / .additional_kwargs / .extra_body
     cfg.vector_store.backend / cfg.vector_store.chroma_path ...
     cfg.splitter.mode / cfg.splitter.chunk_size ...
@@ -215,13 +215,24 @@ class MysqlConfig:
 
 @dataclass
 class EmbeddingConfig:
+    """Embedding 配置。
+
+    后端差异：
+    - bge:   基于 llamaindex HuggingFaceEmbedding，CLS pooling（默认），
+             无指令前缀（bge-small-zh-v1.5 上限 512）
+    - qwen3: 基于 transformers 手写实现，last_token pooling（官方推荐），
+             查询加 "Instruct: ...\\nQuery: " 前缀
+             （Qwen3-Embedding-0.6B 支持到 8192）
+    """
+    # 后端：bge（默认，轻量稳定）| qwen3（精度高，支持长文本）
     backend: str = field(default_factory=lambda: _env("SAG_EMBEDDING_BACKEND", "bge").lower())
-    bge_model_path: str = field(default_factory=lambda: _env("SAG_BGE_MODEL_PATH", ""))
-    qwen3_model_path: str = field(default_factory=lambda: _env("SAG_EMBEDDING_MODEL_PATH", ""))
+    # 本地模型路径（两种后端共用此变量；切后端时改路径即可）
+    model_path: str = field(default_factory=lambda: _env("SAG_EMBEDDING_MODEL_PATH", ""))
+    # 推理设备（默认 cpu；GPU 环境改 cuda。无 CUDA 时会自动降级到 cpu）
     device: str = field(default_factory=lambda: _env("SAG_EMBEDDING_DEVICE", "cpu"))
-    # qwen3 tokenizer 最大长度（默认 8192；bge 不走此参数，bge-small-zh-v1.5 自身上限 512）
-    qwen3_max_length: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_MAX_LENGTH", "8192")))
-    # 是否对向量做 L2 归一化（默认 true，适配余弦相似度；向量库用点积或未启用余弦度量时可关闭）
+    # tokenizer 最大长度（bge 后端会自动压缩到模型上限 512；qwen3 默认 8192）
+    max_length: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_MAX_LENGTH", "8192")))
+    # 是否对向量做 L2 归一化（默认 true，适配余弦相似度）
     normalize: bool = field(default_factory=lambda: _env("SAG_EMBEDDING_NORMALIZE", "true").lower() == "true")
     # 批处理大小（默认 32，按批送入模型；0=不切批一次性送入，可能 OOM）
     batch_size: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_BATCH_SIZE", "32")))
