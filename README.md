@@ -285,7 +285,8 @@ copy .env.example .env  # Windows
 | 变量 | 说明 | 示例 |
 |------|------|------|
 | `SAG_MYSQL_PASSWORD` | MySQL 密码 | `your_password` |
-| `SAG_LLM_API_KEY` | LLM API Key | `sk-xxxxxxxx` |
+| `DASHSCOPE_API_KEY` | 阿里云百炼 API Key（qwen 系列） | `sk-xxxxxxxx` |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key | `sk-xxxxxxxx` |
 | `SAG_BGE_MODEL_PATH` | BGE 模型本地路径 | `/models/bge-small-zh-v1.5` |
 
 > **提示**：
@@ -390,7 +391,7 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 | 组件 | 可选后端 | 配置方式（`.env` 中） |
 |------|---------|----------------------|
 | Embedding | `bge`（默认）/ `qwen3` | `SAG_EMBEDDING_BACKEND` |
-| LLM | `deepseek`（默认）/ `openai_like` / `openai` | `AISAG_LLM_BACKEND` |
+| LLM | `openai_like` / `openai`（按 profile.model 自动判断） | 无需配置 |
 | OCR 引擎 | `rapidocr`（默认，轻量）/ `paddleocr`（高精度） | `AISAG_DOC_OCR_BACKEND` |
 | OCR 开关 | `true`（默认，OCR图片）/ `false`（不OCR，入库更快） | `AISAG_DOC_OCR_IMAGES` |
 | PDF Markdown 模式 | `direct`（默认，快）/ `pymupdf4llm`（表格更准） | `AISAG_PDF_MARKDOWN_MODE` |

@@ -18,7 +18,7 @@ from ..base import (
 )
 from ..base.logger import get_logger
 from ..embeddings import create_embedder
-from ..llm import create_llm
+from ..llm import LlmFactory
 from ..storage import MysqlStore
 from ..vector_store import BaseVectorStore, create_vector_store
 from .sag_retriever import SagRetriever
@@ -34,7 +34,10 @@ class QAEngine:
                  vectors: BaseVectorStore | None = None) -> None:
         self.cfg = cfg or Config()
         self.embedder = create_embedder(self.cfg)
-        self.llm: LLM = create_llm(self.cfg)
+        # LlmFactory 支持按场景返回不同 LLM 实例（答案生成用 ANSWER，其他场景独立配置）
+        self._llm_factory = LlmFactory(self.cfg)
+        # self.llm 作为检索器兜底 LLM：用 ANSWER 场景的实例（检索器内部会用 _llm_for 按场景选取）
+        self.llm: LLM = self._llm_factory.get("ANSWER")
         self._owns_db = db is None
         self.db = db or MysqlStore(
             host=self.cfg.mysql.host, port=self.cfg.mysql.port,
@@ -46,7 +49,8 @@ class QAEngine:
             pool_recycle=self.cfg.mysql.pool_recycle,
         )
         self.vectors = vectors or create_vector_store(self.cfg)
-        self.retriever = SagRetriever(self.cfg, self.db, self.vectors, self.embedder, self.llm)
+        self.retriever = SagRetriever(self.cfg, self.db, self.vectors, self.embedder, self.llm,
+                                      llm_factory=self._llm_factory)
 
     async def search(self, query: str, source_ids: list[str] | None = None,
                      document_ids: list[str] | None = None, *,
@@ -83,7 +87,9 @@ class QAEngine:
             return QA_EMPTY_ANSWER
         messages = self._build_messages(query, result, [])
         try:
-            resp: ChatResponse = await self.llm.achat(messages)
+            # 答案生成使用 ANSWER 场景（可独立配置思考模式 / temperature）
+            llm_answer = self._llm_factory.get("ANSWER")
+            resp: ChatResponse = await llm_answer.achat(messages)
             return str(resp).strip()
         except Exception as e:
             log.error("单轮问答生成失败 query={!r} err={}", query, e)
@@ -95,7 +101,8 @@ class QAEngine:
             return QA_EMPTY_ANSWER
         messages = self._build_messages(query, result, history)
         try:
-            resp: ChatResponse = await self.llm.achat(messages)
+            llm_answer = self._llm_factory.get("ANSWER")
+            resp: ChatResponse = await llm_answer.achat(messages)
             return str(resp).strip()
         except Exception as e:
             log.error("多轮对话生成失败 query={!r} err={}", query, e)
@@ -128,7 +135,8 @@ class QAEngine:
         """流式生成：用 llm.astream_chat 原生异步流式，async for 直接迭代增量 token。"""
         messages = self._build_messages(query, result, history)
         try:
-            async for resp in await self.llm.astream_chat(messages):
+            llm_answer = self._llm_factory.get("ANSWER")
+            async for resp in await llm_answer.astream_chat(messages):
                 delta = getattr(resp, "delta", None)
                 if delta:
                     yield delta

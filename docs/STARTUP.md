@@ -148,16 +148,28 @@ SAG_BGE_MODEL_PATH=/path/to/bge-small-zh-v1.5
 # SAG_EMBEDDING_MODEL_PATH=/path/to/Qwen3-Embedding-0.6B
 
 # ============================================================
-# 3. LLM 大模型（OpenAI 兼容协议）
+# 3. LLM 大模型（多场景配置：配合 llm_profiles.yaml）
 # ============================================================
-SAG_LLM_BASE_URL=https://api.deepseek.com   # API 地址
-SAG_LLM_MODEL=deepseek-chat                 # 模型名称
-SAG_LLM_API_KEY=sk-your-api-key-here        # API Key ← 改成你自己的
-SAG_LLM_TIMEOUT=120                         # 请求超时（秒）
-SAG_LLM_MAX_RETRIES=3                       # 最大重试次数
+# 步骤 1：在 llm_profiles.yaml 中定义 profile（参考 llm_profiles.yaml.example）
+# 步骤 2：在 .env 中按场景选择 profile 并配置参数
+
+# 答案生成 → qwen3.6-27b 开启思考
+SAG_LLM_PROFILE_ANSWER_LLM_NAME=qwen_thinking
+SAG_LLM_PROFILE_ANSWER_ADDITIONAL_KWARGS={"temperature": 0.7, "max_tokens": 12288}
+SAG_LLM_PROFILE_ANSWER_EXTRA_BODY={"enable_thinking": true}
+
+# 结构化场景（不能用思考）→ DeepSeek
+SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME=deepseek_chat
+SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME=deepseek_chat
+SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME=deepseek_chat
+SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME=deepseek_chat
+SAG_LLM_PROFILE_RERANK_LLM_NAME=deepseek_chat
 ```
 
-> **LLM 兼容性**：只要遵循 OpenAI 兼容协议的 API 都可以使用（DeepSeek / OpenAI / 本地 vLLM / Ollama 等），修改 `SAG_LLM_BASE_URL` 和 `SAG_LLM_MODEL` 即可切换。
+> **LLM 兼容性**：只要遵循 OpenAI 兼容协议的 API 都可以使用（DeepSeek / OpenAI / 本地 vLLM / Ollama 等）。
+> 在 `llm_profiles.yaml` 中定义 profile，在 `.env` 中按场景选择 profile 即可切换。
+> 后端由 factory 按 `profile.model` 自动判断（OpenAI 官方模型走 openai，其他走 openai_like），无需也无法手动配置。
+> 每个场景必须显式配置 `_LLM_NAME`，不存在 DEFAULT 回退机制。
 
 ### 2.2 可选配置 — ai_sag 高级参数
 
@@ -165,7 +177,7 @@ SAG_LLM_MAX_RETRIES=3                       # 最大重试次数
 
 ```ini
 # ---- 组件后端 ----
-# AISAG_LLM_BACKEND=deepseek              # deepseek | openai_like | openai（默认 deepseek）
+# LLM 后端由 factory 按 profile.model 自动判断，无需配置
 # AISAG_VECTOR_STORE_BACKEND=chroma       # 向量库后端（默认 chroma）
 # AISAG_CHROMA_PATH=./.chroma             # 向量库目录（默认 项目根/.chroma）
 
@@ -402,7 +414,7 @@ const { answer, sections, trace } = await fetch(`${API_BASE}/api/ask`, {
 | 组件 | 配置项 | 可选值 |
 |------|--------|--------|
 | Embedding | `SAG_EMBEDDING_BACKEND` | `bge` / `qwen3` |
-| LLM | `AISAG_LLM_BACKEND` | `deepseek` / `openai_like` / `openai` |
+| LLM | 无（按 profile.model 自动判断） | `openai_like` / `openai` |
 | 向量库 | `AISAG_VECTOR_STORE_BACKEND` | `chroma` |
 | 切分器 | `AISAG_SPLITTER_MODE` | `semantic`（默认）/ `auto` / `markdown` / `sentence` |
 | OCR | `AISAG_DOC_OCR_BACKEND` | `rapidocr`（默认）/ `paddleocr` |
@@ -545,8 +557,9 @@ python -c "from modelscope import snapshot_download; snapshot_download('AI-Model
 
 ### Q5：LLM API 返回错误
 
-- 检查 `SAG_LLM_API_KEY` 是否正确
-- 检查 `SAG_LLM_BASE_URL` 是否可达
+- 检查 `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` 是否正确（在 .env 中配置）
+- 检查 `llm_profiles.yaml` 中 profile 的 `base_url` 是否可达
+- 检查 `.env` 中每个场景的 `SAG_LLM_PROFILE_<SCENE>_LLM_NAME` 是否在 yaml 中存在
 - 如使用代理，确保设置了 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量
 - 429 错误（rate limit）：降低 `INGEST_CONCURRENCY=1` 串行入库
 

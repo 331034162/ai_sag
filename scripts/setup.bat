@@ -276,11 +276,11 @@ if "%ENV_PATH%"=="NOT_FOUND" (
 )
 
 :: 检查 MySQL 连接
-python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','SAG_LLM_API_KEY','SAG_BGE_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
+python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','DASHSCOPE_API_KEY','DEEPSEEK_API_KEY','SAG_BGE_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo   %C_YELLOW%⚠%C_RESET% 部分配置可能未填写，请检查 .env：
-    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','SAG_LLM_API_KEY':'LLM API Key','SAG_BGE_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
+    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','DASHSCOPE_API_KEY':'阿里云百炼API Key','DEEPSEEK_API_KEY':'DeepSeek API Key','SAG_BGE_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
     echo.
 )
 exit /b 0

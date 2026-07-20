@@ -121,7 +121,8 @@ check_env() {
 import os
 vars = {
     'SAG_MYSQL_HOST': 'MySQL地址', 'SAG_MYSQL_USER': 'MySQL用户',
-    'SAG_MYSQL_PASSWORD': 'MySQL密码', 'SAG_LLM_API_KEY': 'LLM API Key',
+    'SAG_MYSQL_PASSWORD': 'MySQL密码',
+    'DASHSCOPE_API_KEY': '阿里云百炼 API Key', 'DEEPSEEK_API_KEY': 'DeepSeek API Key',
     'SAG_BGE_MODEL_PATH': 'Embedding模型路径'
 }
 missing = [(k, d) for k, d in vars.items() if not os.environ.get(k)]

@@ -18,7 +18,7 @@ from __future__ import annotations
 from .base import Chunk, Config, Entity, Event, LoadedDocument
 from .embeddings import BaseEmbedder, create_embedder
 from .ingest import IngestPipeline
-from .llm import create_llm
+from .llm import LlmFactory
 from .retrieval.qa_engine import QAEngine
 from .vector_store import BaseVectorStore, create_vector_store
 
@@ -32,7 +32,7 @@ __all__ = [
     "Entity",
     "BaseEmbedder",
     "create_embedder",
-    "create_llm",
+    "LlmFactory",
     "BaseVectorStore",
     "create_vector_store",
 ]

@@ -1,13 +1,13 @@
 """配置：复用项目 .env，组件配置结构化为嵌套子 dataclass，便于灵活切换与扩展。
 
 环境变量前缀：
-- SAG_     复用项目原有配置（MySQL/Embedding/LLM）
+- SAG_     复用项目原有配置（MySQL/Embedding/LLM 场景配置）
 - AISAG_   ai_sag 模块专用配置（后端选择、切分、向量库路径等）
 
 配置结构：
     cfg.mysql.host / cfg.mysql.port ...
     cfg.embedding.backend / cfg.embedding.bge_model_path ...
-    cfg.llm.backend / cfg.llm.model ...
+    cfg.llm_scenes["ANSWER"].profile / .additional_kwargs / .extra_body
     cfg.vector_store.backend / cfg.vector_store.chroma_path ...
     cfg.splitter.mode / cfg.splitter.chunk_size ...
     cfg.search.similarity_threshold / cfg.search.fusion ...
@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv, find_dotenv
 
@@ -65,10 +67,116 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 
+def _parse_json_env(key: str, default):
+    """解析 JSON 格式的环境变量（如 thinking_kwargs）。
+
+    支持配置厂商特定的非标参数：
+      AISAG_LLM_THINKING_KWARGS='{"enable_thinking": true}'
+      AISAG_LLM_THINKING_KWARGS='{"reasoning_effort": "high", "thinking": {"type": "enabled"}}'
+
+    空字符串或缺省时返回 default；解析失败给出明确错误，不静默回退。
+    """
+    import json
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"环境变量 {key} 的值不是合法 JSON：{raw!r}（{e}）"
+        ) from e
+
+
+# ---------- LLM Profile（yaml）加载 ----------
+# 大模型连接身份配置从 llm_profiles.yaml 加载；运行参数（temperature / max_tokens /
+# extra_body 等）在 .env 中按场景独立配置，实现"连接信息集中、参数按场景独立"。
+
+_PROFILES_CACHE: dict | None = None
+
+
+def _expand_env_vars(value):
+    """递归把 yaml 里 ${VAR} 占位符替换为 os.environ[VAR]。
+
+    api_key 等敏感信息支持 ${DASHSCOPE_API_KEY} 形式从环境变量读取，避免明文。
+    缺失环境变量时返回空字符串并给出警告（不抛错，兼容本地开发）。
+    """
+    if isinstance(value, str):
+        return _ENV_VAR_RE.sub(_env_var_replacer, value)
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(v) for v in value]
+    return value
+
+
+_ENV_VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+
+
+def _env_var_replacer(match: re.Match) -> str:
+    var = match.group(1)
+    val = os.environ.get(var)
+    if val is None:
+        print(f"[WARNING] 环境变量 {var} 未设置（在 llm_profiles.yaml 中被引用）")
+        return ""
+    return val
+
+
+def _load_profiles_yaml() -> dict:
+    """加载 llm_profiles.yaml（带缓存）。
+
+    查找顺序：
+      1. SAG_LLM_PROFILES_PATH 环境变量指定的路径
+      2. _PKG_DIR / "llm_profiles.yaml"
+      3. _PKG_DIR / "ai_sag" / "llm_profiles.yaml"（子包模式）
+
+    返回 {profile_name: {base_url, api_key, model, timeout, max_retries}} 字典。
+    """
+    global _PROFILES_CACHE
+    if _PROFILES_CACHE is not None:
+        return _PROFILES_CACHE
+
+    import yaml  # 延迟导入，未安装时也能加载其余配置
+    candidates = []
+    env_path = os.environ.get("SAG_LLM_PROFILES_PATH", "").strip()
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(_PKG_DIR / "llm_profiles.yaml")
+    candidates.append(_THIS_FILE.parent.parent / "llm_profiles.yaml")
+
+    yaml_path = next((p for p in candidates if p.exists()), None)
+    if yaml_path is None:
+        _PROFILES_CACHE = {}
+        return _PROFILES_CACHE
+
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    # 展开 ${VAR} 占位符
+    _PROFILES_CACHE = {name: _expand_env_vars(cfg) for name, cfg in raw.items()}
+    return _PROFILES_CACHE
+
+
+# 场景列表（与 llm/factory.py 中 SCENES 保持一致）
+# 命名规则：所有场景配置统一前缀 SAG_LLM_PROFILE_<SCENE>_*
+#   SAG_LLM_PROFILE_<SCENE>_LLM_NAME          选择 llm_profiles.yaml 中的 profile 名
+#   SAG_LLM_PROFILE_<SCENE>_ADDITIONAL_KWARGS 场景独立 additional_kwargs（OpenAI SDK 顶层字段，
+#                                            如 temperature / max_tokens / top_p / tool_choice）
+#   SAG_LLM_PROFILE_<SCENE>_EXTRA_BODY       场景独立 extra_body（厂商扩展字段，
+#                                            如 enable_thinking / reasoning_effort / thinking）
+# 温度和 max_tokens 不再单独配置，统一走 ADDITIONAL_KWARGS（SDK 顶层识别）。
+LLM_SCENES = (
+    "GENRE_CLASSIFY",      # 文档体裁分类（离线）
+    "EVENT_EXTRACT",       # 事件抽取（离线，structured_predict）
+    "QUERY_REWRITE",       # 查询重写（在线）
+    "ENTITY_EXTRACT",      # 查询实体抽取（在线，structured_predict）
+    "RERANK",              # LLM 精排（在线，structured_predict）
+    "ANSWER",              # 答案生成（在线，普通 chat）
+)
+
+
 # ---------- 关键变量缺失检查 ----------
 _MISSING = []
-for _k, _desc in [("SAG_MYSQL_USER", "MySQL 用户名"), ("SAG_MYSQL_PASSWORD", "MySQL 密码"),
-                   ("SAG_LLM_API_KEY", "LLM API Key")]:
+for _k, _desc in [("SAG_MYSQL_USER", "MySQL 用户名"), ("SAG_MYSQL_PASSWORD", "MySQL 密码")]:
     if not _env(_k):
         _MISSING.append(f"  - {_k}（{_desc}）")
 if _MISSING:
@@ -119,14 +227,122 @@ class EmbeddingConfig:
     batch_size: int = field(default_factory=lambda: int(_env("SAG_EMBEDDING_BATCH_SIZE", "32")))
 
 
+# ---------- 多场景 LLM 配置（基于 llm_profiles.yaml）----------
+#
+# 在 llm_profiles.yaml 中定义多个 profile（仅 base_url / api_key / model / timeout /
+# max_retries），在 .env 中按 6 个场景（GENRE_CLASSIFY / EVENT_EXTRACT / QUERY_REWRITE /
+# ENTITY_EXTRACT / RERANK / ANSWER）显式选择 profile 并独立配置运行参数。
+#
+# 命名规则（所有场景配置统一前缀 SAG_LLM_PROFILE_<SCENE>_*）：
+#   SAG_LLM_PROFILE_<SCENE>_LLM_NAME          选择 yaml 中的 profile 名（必填）
+#   SAG_LLM_PROFILE_<SCENE>_ADDITIONAL_KWARGS 场景独立 additional_kwargs
+#                                              （SDK 顶层字段：temperature / max_tokens / top_p / tool_choice）
+#   SAG_LLM_PROFILE_<SCENE>_EXTRA_BODY       场景独立 extra_body
+#                                              （厂商扩展：enable_thinking / reasoning_effort / thinking）
+#
+# 后端由 factory 按 profile.model 自动判断（OpenAI 官方模型走 openai，其他走 openai_like），
+# 无需也无法在 .env 中显式配置。
+# 每个场景必须显式配置 _LLM_NAME，不存在 DEFAULT 回退机制。
+# 配置示例见 .env.example
+
+
 @dataclass
-class LlmConfig:
-    backend: str = field(default_factory=lambda: _env("AISAG_LLM_BACKEND", "deepseek").lower())
-    base_url: str = field(default_factory=lambda: _env("SAG_LLM_BASE_URL", "https://api.deepseek.com"))
-    api_key: str = field(default_factory=lambda: _env("SAG_LLM_API_KEY", ""))
-    model: str = field(default_factory=lambda: _env("SAG_LLM_MODEL", "deepseek-chat"))
-    timeout: float = field(default_factory=lambda: float(_env("SAG_LLM_TIMEOUT", "120")))
-    max_retries: int = field(default_factory=lambda: int(_env("SAG_LLM_MAX_RETRIES", "3")))
+class LlmProfile:
+    """模型连接身份：对应 llm_profiles.yaml 中的一个条目。"""
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+    timeout: float = 120.0
+    max_retries: int = 3
+
+    @classmethod
+    def from_dict(cls, name: str, data: dict) -> "LlmProfile":
+        return cls(
+            name=name,
+            base_url=str(data.get("base_url", "")),
+            api_key=str(data.get("api_key", "")),
+            model=str(data.get("model", "")),
+            timeout=float(data.get("timeout", 120)),
+            max_retries=int(data.get("max_retries", 3)),
+        )
+
+
+@dataclass
+class LlmSceneConfig:
+    """场景级 LLM 配置：profile（连接身份） + 运行参数。
+
+    运行参数通过 additional_kwargs / extra_body 两个字典承载：
+    - additional_kwargs: OpenAI SDK 顶层字段（temperature / max_tokens / top_p / tool_choice 等）
+    - extra_body: 厂商扩展字段（enable_thinking / reasoning_effort / thinking 等）
+
+    后端由 factory 按 profile.model 自动判断：
+    - model 在 llamaindex 的 OpenAI 官方模型列表内 → openai 后端
+    - 否则 → openai_like 后端（兼容 DeepSeek、阿里云百炼、vLLM 等）
+    additional_kwargs / extra_body 为 None 时 factory 会用空字典兜底。
+    """
+    scene: str
+    profile: LlmProfile
+    additional_kwargs: Optional[Dict[str, Any]] = None  # None=未配置（factory 用空字典）
+    extra_body: Optional[Dict[str, Any]] = None          # None=未配置（factory 用空字典）
+
+
+def _resolve_profile(scene: str, profiles: dict) -> tuple[str, LlmProfile]:
+    """解析场景使用的 profile。
+
+    环境变量：SAG_LLM_PROFILE_<SCENE>_LLM_NAME（必填）
+    未配置或配置错误时告警并取第一个 profile 兜底（避免直接报错影响存量环境）。
+    """
+    name = os.environ.get(f"SAG_LLM_PROFILE_{scene}_LLM_NAME", "").strip()
+    if name and name in profiles:
+        return name, LlmProfile.from_dict(name, profiles[name])
+    # 未配置或配置错误：告警并取第一个 profile 兜底
+    if profiles:
+        first_name = next(iter(profiles))
+        if name:
+            print(
+                f"[WARNING] 场景 {scene} 配置的 profile '{name}' 在 llm_profiles.yaml 中未找到，"
+                f"回退到第一个 profile '{first_name}'"
+            )
+        else:
+            print(
+                f"[WARNING] 场景 {scene} 未配置 SAG_LLM_PROFILE_{scene}_LLM_NAME，"
+                f"回退到第一个 profile '{first_name}'（建议在 .env 中显式配置）"
+            )
+        return first_name, LlmProfile.from_dict(first_name, profiles[first_name])
+    # 完全没有 yaml：明确报错
+    raise RuntimeError(
+        f"未找到 llm_profiles.yaml，场景 {scene} 无法解析 profile。"
+        f"请创建 llm_profiles.yaml（参考 llm_profiles.yaml.example）"
+    )
+
+
+def _load_llm_scenes() -> Dict[str, LlmSceneConfig]:
+    """加载所有场景的 LLM 配置。
+
+    命名规则（统一前缀 SAG_LLM_PROFILE_<SCENE>_*）：
+      SAG_LLM_PROFILE_<SCENE>_LLM_NAME          选 profile（必填）
+      SAG_LLM_PROFILE_<SCENE>_ADDITIONAL_KWARGS additional_kwargs（temperature/max_tokens 等）
+      SAG_LLM_PROFILE_<SCENE>_EXTRA_BODY       extra_body（厂商扩展字段）
+    后端由 factory 按 profile.model 自动判断，无需也无法在 .env 中配置。
+    每个场景必须显式配置 _LLM_NAME，不存在 DEFAULT 回退。
+    """
+    profiles = _load_profiles_yaml()
+
+    scenes: Dict[str, LlmSceneConfig] = {}
+    for scene in LLM_SCENES:
+        # 1. 解析 profile（必填，缺失时 _resolve_profile 兜底或报错）
+        profile_name, profile = _resolve_profile(scene, profiles)
+        # 2. 解析场景运行参数（场景未配 → None，factory 用空字典兜底）
+        additional = _parse_json_env(f"SAG_LLM_PROFILE_{scene}_ADDITIONAL_KWARGS", None)
+        extra = _parse_json_env(f"SAG_LLM_PROFILE_{scene}_EXTRA_BODY", None)
+        scenes[scene] = LlmSceneConfig(
+            scene=scene,
+            profile=profile,
+            additional_kwargs=dict(additional) if additional is not None else None,
+            extra_body=dict(extra) if extra is not None else None,
+        )
+    return scenes
 
 
 @dataclass
@@ -377,7 +593,11 @@ class PdfDocParserConfig:
 class Config:
     mysql: MysqlConfig = field(default_factory=MysqlConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    llm: LlmConfig = field(default_factory=LlmConfig)
+    # 多场景 LLM 配置：按 6 个场景（GENRE_CLASSIFY / EVENT_EXTRACT /
+    # QUERY_REWRITE / ENTITY_EXTRACT / RERANK / ANSWER）独立配置 profile 和运行参数。
+    # 每个场景必须显式配置 _LLM_NAME，不存在 DEFAULT 回退机制。
+    # 后端由 factory 按 profile.model 自动判断，无需也无法手动配置。
+    llm_scenes: Dict[str, "LlmSceneConfig"] = field(default_factory=_load_llm_scenes)
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
     splitter: SplitterConfig = field(default_factory=SplitterConfig)
     cleaner: CleanerConfig = field(default_factory=CleanerConfig)

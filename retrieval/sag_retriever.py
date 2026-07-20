@@ -27,6 +27,7 @@ from ..base import (
 )
 from ..base.logger import get_logger
 from ..embeddings import BaseEmbedder
+from ..llm import LlmFactory
 from ..storage import MysqlStore
 from ..vector_store import BaseVectorStore
 
@@ -45,12 +46,22 @@ class _RerankOrder(BaseModel):
 
 class SagRetriever:
     def __init__(self, cfg: Config, db: MysqlStore, vectors: BaseVectorStore,
-                 embedder: BaseEmbedder, llm: LLM) -> None:
+                 embedder: BaseEmbedder, llm: LLM,
+                 llm_factory: "LlmFactory | None" = None) -> None:
         self.cfg = cfg
         self.db = db
         self.vectors = vectors
         self.embedder = embedder
         self.llm = llm
+        # 可选：多场景 LLM 工厂。传入后查询重写/实体抽取/rerank 等会按场景选用 LLM。
+        # 未传入时（旧版兼容）所有调用都退回 self.llm。
+        self._llm_factory = llm_factory
+
+    def _llm_for(self, scene: str) -> LLM:
+        """按场景获取 LLM 实例；无 factory 时回退到 self.llm（旧版兼容）。"""
+        if self._llm_factory is None:
+            return self.llm
+        return self._llm_factory.get(scene)
 
     async def search(self, query: str, source_ids: list[str] | None = None,
                      document_ids: list[str] | None = None, *,
@@ -269,7 +280,7 @@ class SagRetriever:
             ChatMessage(role=MessageRole.USER,
                         content=QUERY_REWRITE_USER_PROMPT.format(history=history_text, query=query)),
         ]
-        resp = await self.llm.achat(messages)
+        resp = await self._llm_for("QUERY_REWRITE").achat(messages)
         text = str(resp).strip()
         text = text.strip("\"'""''")
         for prefix in ("重写后：", "重写后:", "重写：", "重写:",
@@ -298,7 +309,7 @@ class SagRetriever:
                 ChatMessage(role=MessageRole.SYSTEM, content=query_extract_system_prompt()),
                 ChatMessage(role=MessageRole.USER, content="查询：{query}\n请返回实体名列表。"),
             ])
-            result = await self.llm.astructured_predict(
+            result = await self._llm_for("ENTITY_EXTRACT").astructured_predict(
                 _QueryEntities,
                 prompt,
                 query=query,
@@ -1016,7 +1027,7 @@ class SagRetriever:
                 ChatMessage(role=MessageRole.SYSTEM, content=RERANK_SYSTEM_PROMPT),
                 ChatMessage(role=MessageRole.USER, content=RERANK_PROMPT_TEMPLATE),
             ])
-            rerank_result = await self.llm.astructured_predict(
+            rerank_result = await self._llm_for("RERANK").astructured_predict(
                 _RerankOrder,
                 prompt,
                 query=query,
@@ -1025,7 +1036,7 @@ class SagRetriever:
             order = rerank_result.order
         except Exception:
             fallback = RERANK_SYSTEM_PROMPT + "\n\n" + RERANK_PROMPT_TEMPLATE.format(query=query, candidates=candidates)
-            resp = await self.llm.acomplete(fallback)
+            resp = await self._llm_for("RERANK").acomplete(fallback)
             text = str(resp).strip()
             first_line = text.split("\n")[0].strip()
             order = [int(x) for x in re.findall(r"\d+", first_line)]

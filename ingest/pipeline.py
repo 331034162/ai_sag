@@ -16,7 +16,7 @@ from ..base.logger import get_logger
 from ..cleaner import TextCleaner
 from ..embeddings import create_embedder
 from ..extractor import EventExtractor
-from ..llm import create_llm
+from ..llm import LlmFactory
 from ..loader import DocumentLoader
 from ..splitter import create_splitter
 from ..storage import MysqlStore
@@ -56,9 +56,13 @@ class IngestPipeline:
         # semantic 模式需要 embed_model，复用已有的 embedder
         embed_model = getattr(self.embedder, '_model', None)
         self.splitter = create_splitter(self.cfg, embed_model=embed_model)
-        self.llm: LLM = create_llm(self.cfg)
+        # LlmFactory 支持按场景返回不同 LLM 实例（体裁分类/事件抽取等按场景选用）
+        self._llm_factory = LlmFactory(self.cfg)
+        # self.llm 作为兜底 LLM：用 GENRE_CLASSIFY 场景（pipeline 内部按需 _llm_for 选场景）
+        self.llm: LLM = self._llm_factory.get("GENRE_CLASSIFY")
+        # 事件抽取器使用 EVENT_EXTRACT 场景的 LLM
         self.extractor = EventExtractor(
-            self.llm,
+            self._llm_factory.get("EVENT_EXTRACT"),
             max_retries=self.cfg.ingest.extract_max_retries,
             summary_max_chars=self.cfg.ingest.summary_max_chars,
             title_max_chars=self.cfg.ingest.title_max_chars,
@@ -216,7 +220,7 @@ class IngestPipeline:
             "只返回选项名（小写英文），不要解释、不要标点。\n\n文本：\n" + sample
         )
         try:
-            resp = await self.llm.acomplete(prompt)
+            resp = await self._llm_factory.get("GENRE_CLASSIFY").acomplete(prompt)
             genre = str(resp).strip().strip("\"'""''").lower()
             # 容错：LLM 可能返回带说明的文本，取第一个匹配的 genre 词
             for g in SUPPORTED_GENRES:
