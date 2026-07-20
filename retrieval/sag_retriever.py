@@ -52,7 +52,8 @@ class SagRetriever:
         self.embedder = embedder
         self.llm = llm
 
-    async def search(self, query: str, source_ids: list[str] | None = None, *,
+    async def search(self, query: str, source_ids: list[str] | None = None,
+                     document_ids: list[str] | None = None, *,
                      fusion: FusionMode | None = None,
                      history: list[dict] | None = None) -> SearchResult:
         fusion = fusion or self.cfg.search.fusion
@@ -82,12 +83,12 @@ class SagRetriever:
             title_task = self.vectors.aquery_event_titles(
                 query_vec, top_k=self.cfg.search.max_events,
                 similarity_threshold=self.cfg.search.similarity_threshold,
-                source_ids=source_ids,
+                source_ids=source_ids, document_ids=document_ids,
             )
             summary_task = self.vectors.aquery_event_summaries(
                 query_vec, top_k=self.cfg.search.max_events,
                 similarity_threshold=self.cfg.search.similarity_threshold,
-                source_ids=source_ids,
+                source_ids=source_ids, document_ids=document_ids,
             )
             query_entities, title_hits, summary_hits = await asyncio.gather(
                 query_entities_task, title_task, summary_task)
@@ -104,7 +105,7 @@ class SagRetriever:
             summary_task = self.vectors.aquery_event_summaries(
                 query_vec, top_k=self.cfg.search.max_events,
                 similarity_threshold=self.cfg.search.similarity_threshold,
-                source_ids=source_ids,
+                source_ids=source_ids, document_ids=document_ids,
             )
             query_entities, path_b_hits = await asyncio.gather(query_entities_task, summary_task)
             log.info("种子召回策略=summary 结果数={}", len(path_b_hits))
@@ -113,7 +114,7 @@ class SagRetriever:
             title_task = self.vectors.aquery_event_titles(
                 query_vec, top_k=self.cfg.search.max_events,
                 similarity_threshold=self.cfg.search.similarity_threshold,
-                source_ids=source_ids,
+                source_ids=source_ids, document_ids=document_ids,
             )
             query_entities, path_b_hits = await asyncio.gather(query_entities_task, title_task)
             log.info("种子召回策略=title 结果数={}", len(path_b_hits))
@@ -174,7 +175,7 @@ class SagRetriever:
         trace.seed_event_ids = seed_ids
 
         if not seed_ids:
-            return await self._fallback(query_vec, source_ids, trace, fusion)
+            return await self._fallback(query_vec, source_ids, document_ids, trace, fusion)
 
         # 5. 多跳 BFS 扩展（优化 3：缓存事件供精排复用）
         event_cache: dict[str, object] = {}
@@ -220,14 +221,14 @@ class SagRetriever:
             # Bug修复：A路因多事件映射同一chunk或chunk_id为空导致不足per_path时，
             # B路多取差额补足，保证最终给LLM的信息量不缩水
             b_need = per_path if a_count >= per_path else per_path + (per_path - a_count)
-            sections_b = await self._vector_sections(query_vec, source_ids, b_need)
+            sections_b = await self._vector_sections(query_vec, source_ids, document_ids, b_need)
             # 合并去重，上限 2×per_path（A优先，B补足，去重）
             sections = self._merge_dedupe(sections_a, sections_b, per_path * 2)
         else:
             # supplement 模式：A路优先占满 per_path，不足时 B路补足到 per_path
             sections = sections_a[:per_path]
             if len(sections) < per_path:
-                await self._supplement(sections, query_vec, source_ids, per_path)
+                await self._supplement(sections, query_vec, source_ids, document_ids, per_path)
 
         # 填充 source_name，供 LLM 生成答案时引用可读来源
         sections = await self._attach_source_names(sections)
@@ -1134,13 +1135,14 @@ class SagRetriever:
     # ---------------- 双路融合 ----------------
 
     async def _fetch_vector_chunks(self, query_vec: list[float], source_ids: list[str] | None,
+                                  document_ids: list[str] | None,
                                   top_k: int,
                                   existing_chunk_ids: set[str] | None = None,
                                   ) -> list[RetrievedSection]:
         # 优化 2 + Bug 3：抽取共享查询逻辑，并删除 source_ids 重复过滤
         hits = await self.vectors.aquery_chunks(query_vec, top_k=top_k * 2,
                                                 similarity_threshold=self.cfg.search.similarity_threshold,
-                                                source_ids=source_ids)
+                                                source_ids=source_ids, document_ids=document_ids)
         if not hits:
             return []
         existing = existing_chunk_ids or set()
@@ -1166,17 +1168,19 @@ class SagRetriever:
         return sections
 
     async def _vector_sections(self, query_vec: list[float], source_ids: list[str] | None,
+                               document_ids: list[str] | None,
                                top_k: int) -> list[RetrievedSection]:
-        return await self._fetch_vector_chunks(query_vec, source_ids, top_k)
+        return await self._fetch_vector_chunks(query_vec, source_ids, document_ids, top_k)
 
     async def _supplement(self, sections: list[RetrievedSection], query_vec: list[float],
-                          source_ids: list[str] | None, max_sections: int) -> None:
+                          source_ids: list[str] | None, document_ids: list[str] | None,
+                          max_sections: int) -> None:
         if len(sections) >= max_sections:
             return
         existing = {s.chunk_id for s in sections}
         need = max_sections - len(sections)
         new_sections = await self._fetch_vector_chunks(
-            query_vec, source_ids, need, existing_chunk_ids=existing)
+            query_vec, source_ids, document_ids, need, existing_chunk_ids=existing)
         for s in new_sections:
             s.rank = len(sections)
             sections.append(s)
@@ -1201,9 +1205,10 @@ class SagRetriever:
         return merged
 
     async def _fallback(self, query_vec: list[float], source_ids: list[str] | None,
+                        document_ids: list[str] | None,
                         trace: SearchTrace, fusion: FusionMode) -> SearchResult:
         trace.fallback = "vector_only"
-        sections = await self._vector_sections(query_vec, source_ids, self.cfg.search.max_sections)
+        sections = await self._vector_sections(query_vec, source_ids, document_ids, self.cfg.search.max_sections)
         sections = await self._attach_source_names(sections)
         return SearchResult(sections=sections, trace=trace)
 

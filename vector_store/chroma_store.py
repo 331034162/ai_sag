@@ -76,10 +76,21 @@ class ChromaVectorStoreBackend(BaseVectorStore):
 
     def query(self, name: Collection, query_embedding: list[float], top_k: int,
               similarity_threshold: float = 0.0,
-              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        # entities 跨 source 共享，不按 source_id 过滤（P1-15 修复）
-        if source_ids and name != "entities":
-            where = {"source_id": {"$in": source_ids}}
+              source_ids: list[str] | None = None,
+              document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        # entities 跨 source 共享，不按 source_id / document_id 过滤（P1-15 修复）
+        if name != "entities":
+            conditions = []
+            if source_ids:
+                conditions.append({"source_id": {"$in": source_ids}})
+            if document_ids:
+                conditions.append({"document_id": {"$in": document_ids}})
+            if len(conditions) > 1:
+                where = {"$and": conditions}
+            elif len(conditions) == 1:
+                where = conditions[0]
+            else:
+                where = None
         else:
             where = None
         vsq = VectorStoreQuery(
@@ -95,8 +106,9 @@ class ChromaVectorStoreBackend(BaseVectorStore):
                 if sim >= similarity_threshold:
                     hits.append((node.node_id, float(sim)))
         source_filter = (source_ids is not None and name != "entities")
-        log.debug("向量查询 collection={} top_k={} 阈值={} 来源过滤={} 结果数={}",
-                  name, top_k, similarity_threshold, source_filter, len(hits))
+        doc_filter = (document_ids is not None and name != "entities")
+        log.debug("向量查询 collection={} top_k={} 阈值={} 来源过滤={} 文档过滤={} 结果数={}",
+                  name, top_k, similarity_threshold, source_filter, doc_filter, len(hits))
         return hits
 
     def delete_by_source(self, source_id: str) -> None:
@@ -115,6 +127,24 @@ class ChromaVectorStoreBackend(BaseVectorStore):
                          name, source_id, before, after)
             except Exception as e:
                 log.warning("向量删除失败 collection={} source_id={} err={}", name, source_id, e)
+
+    def delete_by_document(self, source_id: str, document_id: str) -> None:
+        """按 (source_id, document_id) 删除四个 collection 的向量。
+
+        entities collection 不按 document_id 删（实体跨 document 共享）。
+        """
+        where = {"$and": [{"source_id": source_id}, {"document_id": document_id}]}
+        for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
+            try:
+                col = self._store(name)._collection
+                before = col.count()
+                col.delete(where=where)
+                after = col.count()
+                log.info("向量删除 collection={} source_id={} document_id={} 删除前={} 删除后={}",
+                         name, source_id, document_id, before, after)
+            except Exception as e:
+                log.warning("向量删除失败 collection={} source_id={} document_id={} err={}",
+                            name, source_id, document_id, e)
 
     def delete_entities_by_ids(self, entity_ids: list[str]) -> None:
         if not entity_ids:

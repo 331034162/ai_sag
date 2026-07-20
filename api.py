@@ -168,12 +168,14 @@ class TextUploadRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     source_ids: list[str] | None = None
+    document_ids: list[str] | None = None
     fusion: Literal["supplement", "concat"] | None = None
 
 
 class AskRequest(BaseModel):
     query: str
     source_ids: list[str] | None = None
+    document_ids: list[str] | None = None
     fusion: Literal["supplement", "concat"] | None = None
 
 
@@ -186,6 +188,7 @@ class ChatRequest(BaseModel):
     query: str
     history: list[ChatMessage] = Field(default_factory=list)
     source_ids: list[str] | None = None
+    document_ids: list[str] | None = None
     fusion: Literal["supplement", "concat"] | None = None
 
 
@@ -473,10 +476,11 @@ def create_app() -> FastAPI:
     # ---- 检索 ----
     @app.post("/api/search", summary="检索")
     async def search(req: SearchRequest):
-        log.info("检索请求 query={!r} source_ids={} fusion={}",
-                 req.query, req.source_ids, req.fusion)
+        log.info("检索请求 query={!r} source_ids={} document_ids={} fusion={}",
+                 req.query, req.source_ids, req.document_ids, req.fusion)
         try:
-            result = await _qa_engine().search(req.query, source_ids=req.source_ids, fusion=req.fusion)
+            result = await _qa_engine().search(req.query, source_ids=req.source_ids,
+                                              document_ids=req.document_ids, fusion=req.fusion)
             log.info("检索完成 query={!r} 命中chunk={} seed_events={} expanded_events={}",
                      req.query, len(result.sections),
                      len(result.trace.seed_event_ids) if result.trace else 0,
@@ -489,10 +493,11 @@ def create_app() -> FastAPI:
     # ---- 问答 ----
     @app.post("/api/ask", summary="问答")
     async def ask(req: AskRequest):
-        log.info("问答请求 query={!r} source_ids={} fusion={}",
-                 req.query, req.source_ids, req.fusion)
+        log.info("问答请求 query={!r} source_ids={} document_ids={} fusion={}",
+                 req.query, req.source_ids, req.document_ids, req.fusion)
         try:
-            answer, result = await _qa_engine().ask(req.query, source_ids=req.source_ids, fusion=req.fusion)
+            answer, result = await _qa_engine().ask(req.query, source_ids=req.source_ids,
+                                                    document_ids=req.document_ids, fusion=req.fusion)
             log.info("问答完成 query={!r} 命中chunk={} answer_len={}",
                      req.query, len(result.sections), len(answer))
         except Exception as e:
@@ -503,13 +508,13 @@ def create_app() -> FastAPI:
     # ---- 多轮对话 ----
     @app.post("/api/chat", summary="多轮对话")
     async def chat(req: ChatRequest):
-        log.info("对话请求 query={!r} history_len={} source_ids={} fusion={}",
-                 req.query, len(req.history), req.source_ids, req.fusion)
+        log.info("对话请求 query={!r} history_len={} source_ids={} document_ids={} fusion={}",
+                 req.query, len(req.history), req.source_ids, req.document_ids, req.fusion)
         try:
             history = [m.model_dump() for m in req.history]
             answer, result = await _qa_engine().chat(
                 req.query, history=history,
-                source_ids=req.source_ids, fusion=req.fusion,
+                source_ids=req.source_ids, document_ids=req.document_ids, fusion=req.fusion,
             )
             log.info("对话完成 query={!r} 命中chunk={} answer_len={}",
                      req.query, len(result.sections), len(answer))
@@ -521,15 +526,15 @@ def create_app() -> FastAPI:
     # ---- 多轮对话（流式） ----
     @app.post("/api/chat/stream", summary="多轮对话（SSE 流式）")
     async def chat_stream(req: ChatRequest):
-        log.info("流式对话请求 query={!r} history_len={} source_ids={} fusion={}",
-                 req.query, len(req.history), req.source_ids, req.fusion)
+        log.info("流式对话请求 query={!r} history_len={} source_ids={} document_ids={} fusion={}",
+                 req.query, len(req.history), req.source_ids, req.document_ids, req.fusion)
 
         async def event_stream():
             try:
                 history = [m.model_dump() for m in req.history]
                 result, gen = await _qa_engine().chat_stream(
                     req.query, history=history,
-                    source_ids=req.source_ids, fusion=req.fusion,
+                    source_ids=req.source_ids, document_ids=req.document_ids, fusion=req.fusion,
                 )
                 log.info("流式对话检索完成 query={!r} 命中chunk={}",
                          req.query, len(result.sections))

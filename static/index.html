@@ -60,6 +60,7 @@
   .section-item .body { font-size: 13px; white-space: pre-wrap; max-height: 200px; overflow: auto; }
   .section-item .source-tag { display: inline-block; font-size: 11px; background: var(--border); color: var(--text); padding: 1px 6px; border-radius: 3px; margin-left: 6px; cursor: pointer; }
   .section-item .source-tag:hover { background: var(--primary); }
+  .section-item .doc-tag { display: inline-block; font-size: 11px; background: var(--panel2); color: var(--muted); padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
   .sources-box { margin-top: 10px; }
   .sources-box .src-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
   .sources-box .src-item { font-size: 12px; color: var(--text); background: var(--panel2); padding: 4px 8px; border-radius: 4px; margin-bottom: 4px; border-left: 2px solid var(--primary); }
@@ -285,9 +286,10 @@ function showRefPopup(el, event) {
   if (!s) return;
   const popup = document.getElementById('refPopup');
   const srcName = s.source_name ? esc(s.source_name) : esc(s.source_id).slice(0, 8);
+  const docIdTag = s.document_id ? `　|　文档ID: ${esc(s.document_id).slice(0, 8)}` : '';
   popup.innerHTML = `
     <div class="rp-head">📄 片段${idx + 1} · 原文段落</div>
-    <div class="rp-src">来源文档: ${srcName}　|　章节: ${esc(s.heading)}</div>
+    <div class="rp-src">来源文档: ${srcName}${docIdTag}　|　章节: ${esc(s.heading)}</div>
     <div class="rp-body">${window.marked ? marked.parse(s.content || '') : esc(s.content)}</div>`;
   popup.style.display = 'block';
   // 定位到鼠标附近
@@ -544,8 +546,9 @@ async function runAsk(withLLM) {
       html += `<div class="sections">`;
       data.sections.forEach((s, i) => {
         const srcName = s.source_name ? esc(s.source_name) : esc(s.source_id).slice(0,8);
+        const docTag = s.document_id ? ` · 文档: <span class="doc-tag">${esc(s.document_id).slice(0,8)}</span>` : '';
         html += `<div class="section-item">
-          <div class="rank">#${i + 1} · 分数 ${s.score.toFixed(3)} · 来源: <span class="source-tag" onclick="loadDetailId('${esc(s.source_id)}')">${srcName}</span></div>
+          <div class="rank">#${i + 1} · 分数 ${s.score.toFixed(3)} · 来源: <span class="source-tag" onclick="loadDetailId('${esc(s.source_id)}')">${srcName}</span>${docTag}</div>
           <div class="head">${esc(s.heading)}</div>
           <div class="body">${esc(s.content)}</div>
         </div>`;

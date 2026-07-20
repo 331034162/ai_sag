@@ -260,7 +260,7 @@ class IngestPipeline:
         try:
             log.info("写入 chunks 向量 数量={}", len(chunks))
             chunk_vec_items = [(c.id, c.content, e) for c, e in zip(chunks, chunk_embs)]
-            await self.vectors.aadd_chunks(chunk_vec_items, source_id=source_id)
+            await self.vectors.aadd_chunks(chunk_vec_items, source_id=source_id, document_id=document_id)
 
             title_texts = [e.title for e in event_records]
             content_texts = [e.content for e in event_records]
@@ -269,13 +269,13 @@ class IngestPipeline:
                 title_embs = await self.embedder.aembed_texts(title_texts)
                 await self.vectors.aadd_events(
                     [(e.id, e.title, emb) for e, emb in zip(event_records, title_embs)],
-                    source_id=source_id)
+                    source_id=source_id, document_id=document_id)
             if content_texts:
                 log.info("生成事件内容向量 数量={}", len(content_texts))
                 content_embs = await self.embedder.aembed_texts(content_texts)
                 await self.vectors.aadd_event_contents(
                     [(e.id, e.content, emb) for e, emb in zip(event_records, content_embs)],
-                    source_id=source_id)
+                    source_id=source_id, document_id=document_id)
             if self.cfg.ingest.embed_summary:
                 summary_texts = [e.summary for e in event_records]
                 if summary_texts:
@@ -283,7 +283,7 @@ class IngestPipeline:
                     summary_embs = await self.embedder.aembed_texts(summary_texts)
                     await self.vectors.aadd_event_summaries(
                         [(e.id, e.summary, emb) for e, emb in zip(event_records, summary_embs)],
-                        source_id=source_id)
+                        source_id=source_id, document_id=document_id)
             if seen_entities:
                 name_lookup: dict[tuple[str, str], str] = {}
                 for ev in extracted_events:

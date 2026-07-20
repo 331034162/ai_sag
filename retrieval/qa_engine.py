@@ -48,28 +48,32 @@ class QAEngine:
         self.vectors = vectors or create_vector_store(self.cfg)
         self.retriever = SagRetriever(self.cfg, self.db, self.vectors, self.embedder, self.llm)
 
-    async def search(self, query: str, source_ids: list[str] | None = None, *,
+    async def search(self, query: str, source_ids: list[str] | None = None,
+                     document_ids: list[str] | None = None, *,
                      fusion: str | None = None,
                      history: list[dict] | None = None) -> SearchResult:
-        return await self.retriever.search(query, source_ids, fusion=fusion, history=history)
+        return await self.retriever.search(query, source_ids, document_ids, fusion=fusion, history=history)
 
-    async def ask(self, query: str, source_ids: list[str] | None = None, *,
+    async def ask(self, query: str, source_ids: list[str] | None = None,
+                  document_ids: list[str] | None = None, *,
                   fusion: str | None = None) -> tuple[str, SearchResult]:
-        result = await self.search(query, source_ids, fusion=fusion)
+        result = await self.search(query, source_ids, document_ids, fusion=fusion)
         answer = await self._generate(query, result)
         return answer, result
 
     async def chat(self, query: str, history: list[dict] | None = None,
-                   source_ids: list[str] | None = None, *,
+                   source_ids: list[str] | None = None,
+                   document_ids: list[str] | None = None, *,
                    fusion: str | None = None) -> tuple[str, SearchResult]:
-        result = await self.search(query, source_ids, fusion=fusion, history=history)
+        result = await self.search(query, source_ids, document_ids, fusion=fusion, history=history)
         answer = await self._chat_generate(query, result, history or [])
         return answer, result
 
     async def chat_stream(self, query: str, history: list[dict] | None = None,
-                          source_ids: list[str] | None = None, *,
+                          source_ids: list[str] | None = None,
+                          document_ids: list[str] | None = None, *,
                           fusion: str | None = None) -> tuple[SearchResult, AsyncGenerator[str, None]]:
-        result = await self.search(query, source_ids, fusion=fusion, history=history)
+        result = await self.search(query, source_ids, document_ids, fusion=fusion, history=history)
         stream = self._stream_chat_generate(query, result, history or [])
         return result, stream
 

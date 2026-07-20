@@ -26,11 +26,17 @@ class BaseVectorStore(ABC):
     @abstractmethod
     def query(self, name: Collection, query_embedding: list[float], top_k: int,
               similarity_threshold: float = 0.0,
-              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
+              source_ids: list[str] | None = None,
+              document_ids: list[str] | None = None) -> list[tuple[str, float]]:
         ...
 
     @abstractmethod
     def delete_by_source(self, source_id: str) -> None:
+        ...
+
+    @abstractmethod
+    def delete_by_document(self, source_id: str, document_id: str) -> None:
+        """按 (source_id, document_id) 删除向量。"""
         ...
 
     @abstractmethod
@@ -68,12 +74,16 @@ class BaseVectorStore(ABC):
 
     async def aquery(self, name: Collection, query_embedding: list[float], top_k: int,
                      similarity_threshold: float = 0.0,
-                     source_ids: list[str] | None = None) -> list[tuple[str, float]]:
+                     source_ids: list[str] | None = None,
+                     document_ids: list[str] | None = None) -> list[tuple[str, float]]:
         return await asyncio.to_thread(
-            self.query, name, query_embedding, top_k, similarity_threshold, source_ids)
+            self.query, name, query_embedding, top_k, similarity_threshold, source_ids, document_ids)
 
     async def adelete_by_source(self, source_id: str) -> None:
         await asyncio.to_thread(self.delete_by_source, source_id)
+
+    async def adelete_by_document(self, source_id: str, document_id: str) -> None:
+        await asyncio.to_thread(self.delete_by_document, source_id, document_id)
 
     async def adelete_entities_by_ids(self, entity_ids: list[str]) -> None:
         if not entity_ids:
@@ -99,30 +109,34 @@ class BaseVectorStore(ABC):
     # ---- 语义化便捷方法（同步）----
 
     def add_chunks(self, items: list[tuple[str, str, list[float]]],
-                   source_id: str | None = None) -> None:
+                   source_id: str | None = None,
+                   document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             self.add("chunks", [i[0] for i in items], [i[1] for i in items],
                      [i[2] for i in items], metas)
 
     def add_events(self, items: list[tuple[str, str, list[float]]],
-                   source_id: str | None = None) -> None:
+                   source_id: str | None = None,
+                   document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             self.add("event_titles", [i[0] for i in items], [i[1] for i in items],
                      [i[2] for i in items], metas)
 
     def add_event_contents(self, items: list[tuple[str, str, list[float]]],
-                           source_id: str | None = None) -> None:
+                           source_id: str | None = None,
+                           document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             self.add("event_contents", [i[0] for i in items], [i[1] for i in items],
                      [i[2] for i in items], metas)
 
     def add_event_summaries(self, items: list[tuple[str, str, list[float]]],
-                            source_id: str | None = None) -> None:
+                            source_id: str | None = None,
+                            document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             self.add("event_summaries", [i[0] for i in items], [i[1] for i in items],
                      [i[2] for i in items], metas)
 
@@ -131,52 +145,61 @@ class BaseVectorStore(ABC):
             self.add("entities", [i[0] for i in items], [i[1] for i in items], [i[2] for i in items])
 
     def query_chunks(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                     source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return self.query("chunks", qe, top_k, similarity_threshold, source_ids)
+                     source_ids: list[str] | None = None,
+                     document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("chunks", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     def query_event_titles(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                           source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return self.query("event_titles", qe, top_k, similarity_threshold, source_ids)
+                           source_ids: list[str] | None = None,
+                           document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("event_titles", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     def query_event_contents(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                             source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return self.query("event_contents", qe, top_k, similarity_threshold, source_ids)
+                             source_ids: list[str] | None = None,
+                             document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("event_contents", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     def query_event_summaries(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return self.query("event_summaries", qe, top_k, similarity_threshold, source_ids)
+                              source_ids: list[str] | None = None,
+                              document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("event_summaries", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     def query_entities(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                       source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return self.query("entities", qe, top_k, similarity_threshold, None)
+                       source_ids: list[str] | None = None,
+                       document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return self.query("entities", qe, top_k, similarity_threshold, None, None)
 
     # ---- 语义化便捷方法（异步）----
 
     async def aadd_chunks(self, items: list[tuple[str, str, list[float]]],
-                          source_id: str | None = None) -> None:
+                          source_id: str | None = None,
+                          document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             await self.aadd("chunks", [i[0] for i in items], [i[1] for i in items],
                             [i[2] for i in items], metas)
 
     async def aadd_events(self, items: list[tuple[str, str, list[float]]],
-                          source_id: str | None = None) -> None:
+                          source_id: str | None = None,
+                          document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             await self.aadd("event_titles", [i[0] for i in items], [i[1] for i in items],
                             [i[2] for i in items], metas)
 
     async def aadd_event_contents(self, items: list[tuple[str, str, list[float]]],
-                                  source_id: str | None = None) -> None:
+                                  source_id: str | None = None,
+                                  document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             await self.aadd("event_contents", [i[0] for i in items], [i[1] for i in items],
                             [i[2] for i in items], metas)
 
     async def aadd_event_summaries(self, items: list[tuple[str, str, list[float]]],
-                                   source_id: str | None = None) -> None:
+                                   source_id: str | None = None,
+                                   document_id: str | None = None) -> None:
         if items:
-            metas = [{"source_id": source_id} for _ in items] if source_id else None
+            metas = self._build_metas(len(items), source_id, document_id)
             await self.aadd("event_summaries", [i[0] for i in items], [i[1] for i in items],
                             [i[2] for i in items], metas)
 
@@ -186,21 +209,44 @@ class BaseVectorStore(ABC):
                             [i[2] for i in items])
 
     async def aquery_chunks(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                            source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return await self.aquery("chunks", qe, top_k, similarity_threshold, source_ids)
+                            source_ids: list[str] | None = None,
+                            document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("chunks", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     async def aquery_event_titles(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                                  source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return await self.aquery("event_titles", qe, top_k, similarity_threshold, source_ids)
+                                  source_ids: list[str] | None = None,
+                                  document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("event_titles", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     async def aquery_event_contents(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                                    source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return await self.aquery("event_contents", qe, top_k, similarity_threshold, source_ids)
+                                    source_ids: list[str] | None = None,
+                                    document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("event_contents", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     async def aquery_event_summaries(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                                     source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return await self.aquery("event_summaries", qe, top_k, similarity_threshold, source_ids)
+                                     source_ids: list[str] | None = None,
+                                     document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("event_summaries", qe, top_k, similarity_threshold, source_ids, document_ids)
 
     async def aquery_entities(self, qe: list[float], top_k: int, similarity_threshold: float = 0.0,
-                              source_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        return await self.aquery("entities", qe, top_k, similarity_threshold, None)
+                              source_ids: list[str] | None = None,
+                              document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        return await self.aquery("entities", qe, top_k, similarity_threshold, None, None)
+
+    @staticmethod
+    def _build_metas(count: int, source_id: str | None, document_id: str | None) -> list[dict] | None:
+        """构造向量 metadata：同时写入 source_id 和 document_id。
+
+        每项返回独立的 dict 实例（避免共享引用被下游意外修改）。
+        """
+        if not source_id and not document_id:
+            return None
+        result: list[dict] = []
+        for _ in range(count):
+            m: dict = {}
+            if source_id:
+                m["source_id"] = source_id
+            if document_id:
+                m["document_id"] = document_id
+            result.append(m)
+        return result
