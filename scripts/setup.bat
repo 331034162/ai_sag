@@ -275,13 +275,18 @@ if "%ENV_PATH%"=="NOT_FOUND" (
     echo   %C_GREEN%✓%C_RESET% .env 已找到
 )
 
-:: 检查 MySQL 连接
-python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','DASHSCOPE_API_KEY','DEEPSEEK_API_KEY','SAG_BGE_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
+:: 检查 MySQL 连接 + LLM 场景 + Embedding
+python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','SAG_LLM_PROFILE_ANSWER_LLM_NAME','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_RERANK_LLM_NAME','SAG_BGE_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo   %C_YELLOW%⚠%C_RESET% 部分配置可能未填写，请检查 .env：
-    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','DASHSCOPE_API_KEY':'阿里云百炼API Key','DEEPSEEK_API_KEY':'DeepSeek API Key','SAG_BGE_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
+    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','SAG_LLM_PROFILE_ANSWER_LLM_NAME':'答案生成场景 profile 名','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME':'体裁分类场景 profile 名','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME':'事件抽取场景 profile 名','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME':'查询重写场景 profile 名','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME':'实体抽取场景 profile 名','SAG_LLM_PROFILE_RERANK_LLM_NAME':'重排场景 profile 名','SAG_BGE_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
     echo.
+)
+
+:: 检查 llm_profiles.yaml
+if not exist "%SRC_DIR%\llm_profiles.yaml" (
+    echo   %C_YELLOW%⚠%C_RESET% 未找到 llm_profiles.yaml，请从 llm_profiles.yaml.example 复制并填写 api_key
 )
 exit /b 0
 

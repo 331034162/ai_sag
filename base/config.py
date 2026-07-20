@@ -98,7 +98,7 @@ _PROFILES_CACHE: dict | None = None
 def _expand_env_vars(value):
     """递归把 yaml 里 ${VAR} 占位符替换为 os.environ[VAR]。
 
-    api_key 等敏感信息支持 ${DASHSCOPE_API_KEY} 形式从环境变量读取，避免明文。
+    api_key 等敏感信息支持 ${VAR} 形式从环境变量读取（也可直接写明文）。
     缺失环境变量时返回空字符串并给出警告（不抛错，兼容本地开发）。
     """
     if isinstance(value, str):

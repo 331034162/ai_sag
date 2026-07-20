@@ -117,12 +117,18 @@ check_env() {
         ok ".env 已找到"
     fi
 
+    # 检查 .env 中的必填项（MySQL / 各场景 _LLM_NAME / Embedding 路径）
     "$PYTHON" -c "
 import os
 vars = {
     'SAG_MYSQL_HOST': 'MySQL地址', 'SAG_MYSQL_USER': 'MySQL用户',
     'SAG_MYSQL_PASSWORD': 'MySQL密码',
-    'DASHSCOPE_API_KEY': '阿里云百炼 API Key', 'DEEPSEEK_API_KEY': 'DeepSeek API Key',
+    'SAG_LLM_PROFILE_ANSWER_LLM_NAME': '答案生成场景 profile 名',
+    'SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME': '体裁分类场景 profile 名',
+    'SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME': '事件抽取场景 profile 名',
+    'SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME': '查询重写场景 profile 名',
+    'SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME': '实体抽取场景 profile 名',
+    'SAG_LLM_PROFILE_RERANK_LLM_NAME': '重排场景 profile 名',
     'SAG_BGE_MODEL_PATH': 'Embedding模型路径'
 }
 missing = [(k, d) for k, d in vars.items() if not os.environ.get(k)]
@@ -132,6 +138,11 @@ if missing:
         print(f'     - {d}: 未设置')
     print()
 " 2>/dev/null || true
+
+    # 检查 llm_profiles.yaml
+    if [ ! -f "$SRC_DIR/llm_profiles.yaml" ]; then
+        warn "未找到 llm_profiles.yaml，请从 llm_profiles.yaml.example 复制并填写 api_key"
+    fi
 }
 
 if [ "$ACTION" = "check" ]; then

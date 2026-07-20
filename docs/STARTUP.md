@@ -557,7 +557,7 @@ python -c "from modelscope import snapshot_download; snapshot_download('AI-Model
 
 ### Q5：LLM API 返回错误
 
-- 检查 `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` 是否正确（在 .env 中配置）
+- 检查 `llm_profiles.yaml` 中 profile 的 `api_key` / `base_url` 是否正确（直接写在 yaml 中，无需环境变量）
 - 检查 `llm_profiles.yaml` 中 profile 的 `base_url` 是否可达
 - 检查 `.env` 中每个场景的 `SAG_LLM_PROFILE_<SCENE>_LLM_NAME` 是否在 yaml 中存在
 - 如使用代理，确保设置了 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量

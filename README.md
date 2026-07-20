@@ -285,9 +285,10 @@ copy .env.example .env  # Windows
 | 变量 | 说明 | 示例 |
 |------|------|------|
 | `SAG_MYSQL_PASSWORD` | MySQL 密码 | `your_password` |
-| `DASHSCOPE_API_KEY` | 阿里云百炼 API Key（qwen 系列） | `sk-xxxxxxxx` |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key | `sk-xxxxxxxx` |
+| `SAG_LLM_PROFILE_<场景>_LLM_NAME` | 各场景选用的 profile 名（6 个场景必填） | `deepseek_chat` |
 | `SAG_BGE_MODEL_PATH` | BGE 模型本地路径 | `/models/bge-small-zh-v1.5` |
+
+> **LLM 连接信息**：`api_key` / `base_url` / `model` 等直接写在 `llm_profiles.yaml` 中（参考 `llm_profiles.yaml.example` 创建，文件已在 `.gitignore` 中）。后端由 factory 按 `profile.model` 自动判断，无需配置。
 
 > **提示**：
 > 1. `config.py` 自动从自身目录逐级向上搜索 `.env`，无论仓库 clone 到哪个路径，无需修改代码。
