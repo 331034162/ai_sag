@@ -358,9 +358,58 @@ def _load_llm_scenes() -> Dict[str, LlmSceneConfig]:
 
 @dataclass
 class VectorStoreConfig:
+    """向量库配置。
+
+    支持四种后端：
+      - chroma（默认）：本地轻量持久化，无需外部服务，适合开发/小规模场景
+      - faiss：FAISS 内存索引 + 本地持久化，单机检索速度极快，适合本地大规模
+      - milvus：分布式向量库，支持高并发与横向扩展，适合生产部署
+      - pgvector：基于 PostgreSQL + pgvector 扩展，可与业务关系数据共存于同一数据库，
+        支持 SQL 联查，适合已有 PG 基础设施且希望统一 OLTP+向量检索的场景
+
+    dim 必须与 embedding 模型输出维度一致：
+      - bge-small-zh-v1.5：512
+      - Qwen3-Embedding-0.6B：1024
+      - 其他模型参考其 model card
+    切换 embedding 后端时同步修改 dim，否则写入会报维度不匹配错误。
+    """
     backend: str = field(default_factory=lambda: _env("AISAG_VECTOR_STORE_BACKEND", "chroma").lower())
+    # 向量维度：faiss/milvus/pgvector 创建索引/集合/表时需要，必须与 embedding 输出维度一致
+    dim: int = field(default_factory=lambda: int(_env("AISAG_VECTOR_STORE_DIM", "512")))
+    # ---- Chroma 后端 ----
     chroma_path: str = field(default_factory=lambda: _env(
         "AISAG_CHROMA_PATH", str(_PKG_DIR / ".chroma")))
+    # ---- FAISS 后端 ----
+    # 持久化目录：每个 collection 写两个文件 {name}.index（FAISS 索引）+ {name}.meta.json（元数据）
+    faiss_path: str = field(default_factory=lambda: _env(
+        "AISAG_FAISS_PATH", str(_PKG_DIR / ".faiss")))
+    # ---- Milvus 后端 ----
+    # Milvus 服务地址（docker 启动默认 localhost:19530）
+    milvus_uri: str = field(default_factory=lambda: _env("AISAG_MILVUS_URI", "http://localhost:19530"))
+    # Milvus 鉴权 token（无认证服务可留空）
+    milvus_token: str = field(default_factory=lambda: _env("AISAG_MILVUS_TOKEN", ""))
+    # 集合名前缀：5 个 collection 会创建为 {prefix}chunks / {prefix}event_titles / ...
+    # 多实例共享同一 Milvus 时通过前缀隔离
+    milvus_collection_prefix: str = field(default_factory=lambda: _env(
+        "AISAG_MILVUS_COLLECTION_PREFIX", "sag_"))
+    # 是否覆盖已有集合（True=每次启动重建；False=保留已有数据，追加写入）
+    milvus_overwrite: bool = field(
+        default_factory=lambda: _env("AISAG_MILVUS_OVERWRITE", "false").lower() == "true")
+    # ---- PGVector 后端 ----
+    # 连接串：postgresql://{user}:{password}@{host}:{port}/{database}
+    pg_connection_string: str = field(default_factory=lambda: _env(
+        "AISAG_PG_CONNECTION_STRING", "postgresql://postgres:postgres@localhost:5432/sag"))
+    # Schema 名（默认 public）
+    pg_schema_name: str = field(default_factory=lambda: _env("AISAG_PG_SCHEMA_NAME", "public"))
+    # 表名前缀：5 个 collection 会创建为 {prefix}chunks / {prefix}event_titles / ...
+    pg_table_prefix: str = field(default_factory=lambda: _env("AISAG_PG_TABLE_PREFIX", "sag_"))
+    # 是否使用 HNSW 索引（True=HNSW 速度快但写入慢；False=IVM_FLAT 精确检索）
+    pg_hnsw_index: bool = field(
+        default_factory=lambda: _env("AISAG_PG_HNSW_INDEX", "true").lower() == "true")
+    # 是否使用异步驱动（asyncpg）：True=异步连接池，False=同步 psycopg2
+    # 项目全链路异步，建议保持 True
+    pg_async: bool = field(
+        default_factory=lambda: _env("AISAG_PG_ASYNC", "true").lower() == "true")
 
 
 @dataclass

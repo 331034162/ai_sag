@@ -51,9 +51,18 @@ llama-index-embeddings-huggingface>=0.4.0 # HuggingFace 本地 Embedding
 llama-index-vector-stores-chroma>=0.3.0   # ChromaDB 向量存储集成
 
 # ------------------------------------------------------------
-# 向量数据库
+# 向量数据库（四选一，通过 AISAG_VECTOR_STORE_BACKEND 切换）
 # ------------------------------------------------------------
-chromadb>=1.0.0               # 轻量级本地向量数据库
+chromadb>=1.0.0                            # ChromaDB — 本地轻量持久化向量库（默认后端）
+faiss-cpu>=1.8.0                           # FAISS — 单机内存向量检索（CPU 版，GPU 版见下方说明）
+llama-index-vector-stores-faiss>=0.3.0     # LlamaIndex FAISS 集成
+pymilvus>=2.4.0                            # Milvus Python 客户端
+llama-index-vector-stores-milvus>=0.3.0    # LlamaIndex Milvus 集成
+llama-index-vector-stores-postgres>=0.3.0  # LlamaIndex PGVector 集成
+asyncpg>=0.29.0                            # PostgreSQL 异步驱动（PGVector 后端）
+sqlalchemy>=2.0.0                          # ORM 与连接管理（PGVector 后端元数据查询用）
+# 注：如需 FAISS GPU 加速，改用 faiss-gpu（需 CUDA Toolkit 与 NVIDIA 驱动），
+# 安装：pip install faiss-gpu-cu12  或  conda install -c conda-forge faiss-gpu
 
 # ------------------------------------------------------------
 # 关系型数据库（SAG 事件-实体超边存储）

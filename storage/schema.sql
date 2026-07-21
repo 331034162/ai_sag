@@ -24,32 +24,36 @@ CREATE TABLE IF NOT EXISTS aisag_documents (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS aisag_chunks (
-  id           VARCHAR(36) NOT NULL PRIMARY KEY,
-  source_id    VARCHAR(36) NOT NULL,
-  document_id  VARCHAR(36) NOT NULL,
-  rank_index   INT NOT NULL DEFAULT 0,
-  heading      VARCHAR(512),
-  content      MEDIUMTEXT NOT NULL,
-  metadata     JSON,
-  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id            VARCHAR(36) NOT NULL PRIMARY KEY,
+  source_id     VARCHAR(36) NOT NULL,
+  document_id   VARCHAR(36) NOT NULL,
+  rank_index    INT NOT NULL DEFAULT 0,
+  heading       VARCHAR(512),
+  content       MEDIUMTEXT NOT NULL,
+  metadata      JSON,
+  faiss_id_hash BIGINT NOT NULL DEFAULT 0 COMMENT 'FAISS IndexIDMap2 int64 id（UUID 哈希，仅 FAISS 后端使用，其他后端填 0）',
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_aisag_chunk_source (source_id),
-  INDEX idx_aisag_chunk_doc (document_id)
+  INDEX idx_aisag_chunk_doc (document_id),
+  UNIQUE KEY uq_aisag_chunk_faiss_hash (faiss_id_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS aisag_events (
-  id           VARCHAR(36) NOT NULL PRIMARY KEY,
-  source_id    VARCHAR(36) NOT NULL,
-  document_id  VARCHAR(36) NOT NULL,
-  chunk_id     VARCHAR(36) NOT NULL,
-  rank_index   INT NOT NULL DEFAULT 0,
-  title        VARCHAR(1024) NOT NULL,
-  summary      TEXT,
-  content      MEDIUMTEXT NOT NULL,
-  metadata     JSON,
-  deleted_at   DATETIME NULL,
-  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id            VARCHAR(36) NOT NULL PRIMARY KEY,
+  source_id     VARCHAR(36) NOT NULL,
+  document_id   VARCHAR(36) NOT NULL,
+  chunk_id      VARCHAR(36) NOT NULL,
+  rank_index    INT NOT NULL DEFAULT 0,
+  title         VARCHAR(1024) NOT NULL,
+  summary       TEXT,
+  content       MEDIUMTEXT NOT NULL,
+  metadata      JSON,
+  faiss_id_hash BIGINT NOT NULL DEFAULT 0 COMMENT 'FAISS IndexIDMap2 int64 id（UUID 哈希，仅 FAISS 后端使用，其他后端填 0）',
+  deleted_at    DATETIME NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_aisag_event_source (source_id),
-  INDEX idx_aisag_event_chunk (chunk_id)
+  INDEX idx_aisag_event_chunk (chunk_id),
+  UNIQUE KEY uq_aisag_event_faiss_hash (faiss_id_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS aisag_entities (
@@ -58,9 +62,11 @@ CREATE TABLE IF NOT EXISTS aisag_entities (
   name             VARCHAR(512) NOT NULL,
   normalized_name  VARCHAR(512) NOT NULL,
   description      TEXT,
+  faiss_id_hash    BIGINT NOT NULL DEFAULT 0 COMMENT 'FAISS IndexIDMap2 int64 id（UUID 哈希，仅 FAISS 后端使用，其他后端填 0）',
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_aisag_entity (entity_type, normalized_name),
+  UNIQUE KEY uq_aisag_entity_faiss_hash (faiss_id_hash),
   INDEX idx_aisag_entity_norm (normalized_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

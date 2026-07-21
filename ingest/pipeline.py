@@ -53,8 +53,12 @@ class IngestPipeline:
             protect_list_items=self.cfg.cleaner.protect_list_items,
         )
         self.embedder = create_embedder(self.cfg)
-        # semantic 模式需要 embed_model，复用已有的 embedder
-        embed_model = getattr(self.embedder, '_model', None)
+        # semantic 模式需要 LlamaIndex BaseEmbedding 实例：
+        #   - qwen3 后端：self.embedder._llama_embed 是 HuggingFaceEmbedding（BaseEmbedding 子类）
+        #   - bge 后端：self.embedder._model 是 LlamaIndex HuggingFaceEmbedding（BaseEmbedding 子类）
+        # 两者命名不同，统一用 getattr 探测
+        embed_model = getattr(self.embedder, '_llama_embed', None) \
+            or getattr(self.embedder, '_model', None)
         self.splitter = create_splitter(self.cfg, embed_model=embed_model)
         # LlmFactory 支持按场景返回不同 LLM 实例（体裁分类/事件抽取等按场景选用）
         self._llm_factory = LlmFactory(self.cfg)
@@ -76,7 +80,7 @@ class IngestPipeline:
             pool_timeout=self.cfg.mysql.pool_timeout,
             pool_recycle=self.cfg.mysql.pool_recycle,
         )
-        self.vectors = create_vector_store(self.cfg)
+        self.vectors = create_vector_store(self.cfg, mysql_store=self.db)
         self._reconcile_task: asyncio.Task | None = None
         # 并发入库信号量：限制同时入库的文档数，防止 LLM API rate limit / embedding OOM
         self._ingest_semaphore = asyncio.Semaphore(self.cfg.ingest.concurrency)

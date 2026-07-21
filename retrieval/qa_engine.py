@@ -48,7 +48,7 @@ class QAEngine:
             pool_timeout=self.cfg.mysql.pool_timeout,
             pool_recycle=self.cfg.mysql.pool_recycle,
         )
-        self.vectors = vectors or create_vector_store(self.cfg)
+        self.vectors = vectors or create_vector_store(self.cfg, mysql_store=self.db)
         self.retriever = SagRetriever(self.cfg, self.db, self.vectors, self.embedder, self.llm,
                                       llm_factory=self._llm_factory)
 

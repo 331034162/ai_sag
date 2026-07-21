@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -20,6 +21,16 @@ from ..base.logger import get_logger
 log = get_logger()
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+
+def uuid_to_int64(uuid_str: str) -> int:
+    """UUID 字符串 → int64 hash（用于 FAISS IndexIDMap2 的 id）。
+
+    使用 blake2b 8 字节摘要，转为有符号 int64。
+    冲突概率：单表 10 亿条数据下约 1.16e-10（极低），MySQL 唯一索引兜底。
+    """
+    h = hashlib.blake2b(uuid_str.encode("utf-8"), digest_size=8)
+    return int.from_bytes(h.digest(), "big", signed=True)
 
 
 class MysqlStore:
@@ -161,6 +172,35 @@ class MysqlStore:
                         else:
                             raise
 
+                # 兼容旧表：为 chunks / events / entities 添加 faiss_id_hash 列 + 唯一索引
+                # 用途：FAISS IndexIDMap2 用 int64 id，需要把 UUID 哈希成 int64 存到这一列，
+                #       查询时 FAISS 返回 hash → MySQL WHERE faiss_id_hash IN (...) 回查业务字段
+                # 非 FAISS 后端时此列填 0，不参与查询（DEFAULT 0 不影响其他后端）
+                for table in ("aisag_chunks", "aisag_events", "aisag_entities"):
+                    try:
+                        await cur.execute(
+                            f"ALTER TABLE {table} "
+                            f"ADD COLUMN faiss_id_hash BIGINT NOT NULL DEFAULT 0 "
+                            f"COMMENT 'FAISS int64 hash（仅 FAISS 后端使用）'")
+                        log.info("ensure_schema: 已添加 {}.faiss_id_hash 列", table)
+                    except Exception as e:
+                        if getattr(e, 'args', [None])[0] == 1060:  # Duplicate column name
+                            log.info("ensure_schema: {}.faiss_id_hash 列已存在，跳过", table)
+                        else:
+                            raise
+                for table in ("aisag_chunks", "aisag_events", "aisag_entities"):
+                    try:
+                        await cur.execute(
+                            f"ALTER TABLE {table} "
+                            f"ADD UNIQUE KEY uq_aisag_{table.split('_')[-1]}_faiss_hash (faiss_id_hash)")
+                        log.info("ensure_schema: 已添加 {}.uq_..._faiss_hash 唯一索引", table)
+                    except Exception as e:
+                        code = getattr(e, 'args', [None])[0]
+                        if code == 1061:  # Duplicate key name
+                            log.info("ensure_schema: {}.faiss_id_hash 唯一索引已存在，跳过", table)
+                        else:
+                            raise
+
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
         return [s.strip() for s in re.split(r";\s*\n", sql) if s.strip()]
@@ -234,21 +274,23 @@ class MysqlStore:
 
     async def insert_chunk(self, chunk: Chunk) -> None:
         await self._execute(
-            "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content, metadata) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content, metadata, faiss_id_hash) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
             (chunk.id, chunk.source_id, chunk.document_id, chunk.rank_index,
              chunk.heading, chunk.content,
-             json.dumps(chunk.metadata or {}, ensure_ascii=False)),
+             json.dumps(chunk.metadata or {}, ensure_ascii=False),
+             uuid_to_int64(chunk.id)),
         )
 
     async def insert_event(self, event: Event) -> None:
         await self._execute(
             "INSERT INTO aisag_events (id, source_id, document_id, chunk_id, rank_index, "
-            "title, summary, content, metadata) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "title, summary, content, metadata, faiss_id_hash) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (event.id, event.source_id, event.document_id, event.chunk_id, event.rank_index,
              event.title, event.summary, event.content,
-             json.dumps({}, ensure_ascii=False)),
+             json.dumps({}, ensure_ascii=False),
+             uuid_to_int64(event.id)),
         )
 
     async def upsert_entity(self, entity: ExtractedEntity) -> str:
@@ -257,11 +299,11 @@ class MysqlStore:
         async with self.transaction() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                    "VALUES (%s,%s,%s,%s,%s) "
+                    "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description, faiss_id_hash) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) "
                     "AS new_ent ON DUPLICATE KEY UPDATE "
-                    "name=new_ent.name",
-                    (eid, entity.type, entity.name, norm, entity.description),
+                    "name=new_ent.name, faiss_id_hash=new_ent.faiss_id_hash",
+                    (eid, entity.type, entity.name, norm, entity.description, uuid_to_int64(eid)),
                 )
                 await cur.execute(
                     "SELECT id FROM aisag_entities WHERE entity_type=%s AND normalized_name=%s",
@@ -305,16 +347,17 @@ class MysqlStore:
                     (document_id, source_id, doc_title, doc_content, "COMPLETED",
                      json.dumps({}, ensure_ascii=False)),
                 )
-                # 批量插入 chunks（P1 性能优化）
+                # 批量插入 chunks（P1 性能优化，同时写入 faiss_id_hash）
                 chunk_rows = [
                     (c.id, c.source_id, c.document_id, c.rank_index,
                      c.heading, c.content,
-                     json.dumps(c.metadata or {}, ensure_ascii=False))
+                     json.dumps(c.metadata or {}, ensure_ascii=False),
+                     uuid_to_int64(c.id))
                     for c in chunks
                 ]
                 await cur.executemany(
-                    "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content, metadata) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content, metadata, faiss_id_hash) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                     chunk_rows,
                 )
                 # 构造 event 记录并批量插入
@@ -326,17 +369,20 @@ class MysqlStore:
                     event_records.append(event)
                 event_rows = [
                     (e.id, e.source_id, e.document_id, e.chunk_id, e.rank_index,
-                     e.title, e.summary, e.content, json.dumps({}, ensure_ascii=False))
+                     e.title, e.summary, e.content, json.dumps({}, ensure_ascii=False),
+                     uuid_to_int64(e.id))
                     for e in event_records
                 ]
                 await cur.executemany(
                     "INSERT INTO aisag_events (id, source_id, document_id, chunk_id, rank_index, "
-                    "title, summary, content, metadata) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "title, summary, content, metadata, faiss_id_hash) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     event_rows,
                 )
 
                 # 实体去重 + 关联写入（需逐条查询去重，无法批量）
+                # 实体复用时仍需更新其 faiss_id_hash（保持最新写入者的一致性，
+                # 同一个实体被多个 source 引用时 id 不变，hash 值相同，写多次是幂等的）
                 new_entity_count = 0
                 reused_entity_count = 0
                 for idx, (chunk, ev) in enumerate(zip(chunks, events)):
@@ -349,11 +395,11 @@ class MysqlStore:
                         else:
                             new_eid = str(uuid.uuid4())
                             await cur.execute(
-                                "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                                "VALUES (%s,%s,%s,%s,%s) "
+                                "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description, faiss_id_hash) "
+                                "VALUES (%s,%s,%s,%s,%s,%s) "
                                 "AS new_ent ON DUPLICATE KEY UPDATE "
-                                "name=new_ent.name",
-                                (new_eid, e.type, e.name, norm, e.description),
+                                "name=new_ent.name, faiss_id_hash=new_ent.faiss_id_hash",
+                                (new_eid, e.type, e.name, norm, e.description, uuid_to_int64(new_eid)),
                             )
                             await cur.execute(
                                 "SELECT id FROM aisag_entities WHERE entity_type=%s AND normalized_name=%s",
@@ -810,6 +856,71 @@ class MysqlStore:
             rank_index=r["rank_index"], heading=r.get("heading") or "Introduction",
             content=r["content"], metadata=meta or {},
         )
+
+    # ---------------- FAISS hash 反查（仅 FAISS 后端使用）----------------
+
+    async def fetch_chunks_by_hashes(self, hashes: list[int]) -> list[dict]:
+        """按 faiss_id_hash 批量查 chunks（FAISS 后端检索后回查业务字段）。
+
+        返回 list[dict]，每项含 id/source_id/document_id/content/faiss_id_hash。
+        """
+        if not hashes:
+            return []
+        ph = ",".join(["%s"] * len(hashes))
+        sql = (
+            f"SELECT id, source_id, document_id, content, faiss_id_hash "
+            f"FROM aisag_chunks WHERE faiss_id_hash IN ({ph})"
+        )
+        return await self._fetchall(sql, list(hashes))
+
+    async def fetch_events_by_hashes(self, hashes: list[int]) -> list[dict]:
+        """按 faiss_id_hash 批量查 events（FAISS 检索 event_titles/contents/summaries 后回查）。
+
+        返回 list[dict]，每项含 id/source_id/document_id/title/summary/content/faiss_id_hash。
+        软删事件（deleted_at IS NOT NULL）会被自动过滤。
+        """
+        if not hashes:
+            return []
+        ph = ",".join(["%s"] * len(hashes))
+        sql = (
+            f"SELECT id, source_id, document_id, title, summary, content, faiss_id_hash "
+            f"FROM aisag_events WHERE faiss_id_hash IN ({ph}) AND deleted_at IS NULL"
+        )
+        return await self._fetchall(sql, list(hashes))
+
+    async def fetch_entities_by_hashes(self, hashes: list[int]) -> list[dict]:
+        """按 faiss_id_hash 批量查 entities（FAISS 检索 entities collection 后回查）。
+
+        返回 list[dict]，每项含 id/entity_type/name/normalized_name/description/faiss_id_hash。
+        """
+        if not hashes:
+            return []
+        ph = ",".join(["%s"] * len(hashes))
+        sql = (
+            f"SELECT id, entity_type, name, normalized_name, description, faiss_id_hash "
+            f"FROM aisag_entities WHERE faiss_id_hash IN ({ph})"
+        )
+        return await self._fetchall(sql, list(hashes))
+
+    async def fetch_source_ids_by_hashes(self, table: str, hashes: list[int]) -> dict[int, str]:
+        """通用：按 faiss_id_hash 批量回查 source_id，返回 {hash: source_id} 映射。
+
+        用于 FAISS 后端在 source_id 过滤场景下做后过滤。
+        table 取值：'aisag_chunks' / 'aisag_events' / 'aisag_entities'。
+        """
+        if not hashes:
+            return {}
+        ph = ",".join(["%s"] * len(hashes))
+        sql = f"SELECT faiss_id_hash, source_id FROM {table} WHERE faiss_id_hash IN ({ph})"
+        # entities 表无 source_id 列，特殊处理
+        if table == "aisag_entities":
+            sql = (
+                f"SELECT e.faiss_id_hash, ee.event_id FROM aisag_entities e "
+                f"JOIN aisag_event_entities ee ON ee.entity_id = e.id "
+                f"WHERE e.faiss_id_hash IN ({ph})"
+            )
+        rows = await self._fetchall(sql, list(hashes))
+        return {int(r["faiss_id_hash"]): str(r["source_id"]) for r in rows}
 
     def to_event_record(self, event: ExtractedEvent, *, source_id: str, document_id: str,
                         chunk_id: str, rank_index: int) -> Event:
