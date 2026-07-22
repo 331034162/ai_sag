@@ -598,6 +598,94 @@ class PgStore:
 
                 return n, orphan_ids
 
+    async def delete_by_document(self, source_id: str, document_id: str) -> tuple[int, list[str]]:
+        """按 (source_id, document_id) 删除单个文档的关系库数据。
+
+        与 delete_by_source 的区别：
+          - delete_by_source 删整个 source（含 sources / documents 元数据表）
+          - delete_by_document 只删该 document_id 下的 chunks / events / event_entities
+            （不删 sources / documents 元数据，因为 source 下可能还有其他 document）
+
+        返回：(删除事件数, 孤儿实体 id 列表)
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. 查受影响的实体 id（用于后续孤儿检测）
+                rows = await conn.fetch(
+                    "SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
+                    "JOIN aisag_events e ON e.id = ee.event_id "
+                    "WHERE e.source_id=$1 AND e.document_id=$2",
+                    source_id, document_id,
+                )
+                affected_entity_ids = [str(r["entity_id"]) for r in rows]
+
+                # 2. 删 event_entities 关联（先删子表）
+                await conn.execute(
+                    "DELETE FROM aisag_event_entities WHERE event_id IN "
+                    "(SELECT id FROM aisag_events WHERE source_id=$1 AND document_id=$2)",
+                    source_id, document_id,
+                )
+                # 3. 删 events
+                result = await conn.execute(
+                    "DELETE FROM aisag_events WHERE source_id=$1 AND document_id=$2",
+                    source_id, document_id,
+                )
+                n = int(result.split()[-1]) if result else 0
+                # 4. 删 chunks
+                await conn.execute(
+                    "DELETE FROM aisag_chunks WHERE source_id=$1 AND document_id=$2",
+                    source_id, document_id,
+                )
+                # 5. 删 documents 元数据（单个文档，注意 documents 表的 document_id 列名为 id）
+                await conn.execute(
+                    "DELETE FROM aisag_documents WHERE source_id=$1 AND id=$2",
+                    source_id, document_id,
+                )
+                # 5.1 若该 source 下已无其他 document，则连 source 元数据一起删
+                await conn.execute(
+                    "DELETE FROM aisag_sources WHERE id=$1 "
+                    "AND NOT EXISTS (SELECT 1 FROM aisag_documents WHERE source_id=$1)",
+                    source_id,
+                )
+                # 6. 删 FAISS 映射表
+                if self._faiss_map_enabled:
+                    await conn.execute(
+                        "DELETE FROM faiss_chunks_map WHERE source_id=$1 AND document_id=$2",
+                        source_id, document_id,
+                    )
+                    await conn.execute(
+                        "DELETE FROM faiss_events_map WHERE source_id=$1 AND document_id=$2",
+                        source_id, document_id,
+                    )
+
+                # 7. 孤儿实体检测与清理（逻辑同 delete_by_source）
+                orphan_ids: list[str] = []
+                if affected_entity_ids:
+                    ph_aff = self._ph(1, len(affected_entity_ids))
+                    orphan_rows = await conn.fetch(
+                        f"SELECT e.id, e.entity_type, e.name FROM aisag_entities e "
+                        f"WHERE e.id IN ({ph_aff}) "
+                        f"AND NOT EXISTS ("
+                        f"  SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = e.id"
+                        f")",
+                        *affected_entity_ids,
+                    )
+                    orphan_ids = [str(r["id"]) for r in orphan_rows]
+                    if orphan_ids:
+                        ph_o = self._ph(1, len(orphan_ids))
+                        await conn.execute(
+                            f"DELETE FROM aisag_entities WHERE id IN ({ph_o})",
+                            *orphan_ids,
+                        )
+                        if self._faiss_map_enabled:
+                            await conn.execute(
+                                f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph_o})",
+                                *orphan_ids,
+                            )
+
+                return n, orphan_ids
+
     async def hard_delete_soft_deleted_events(self) -> tuple[list[str], list[str]]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:

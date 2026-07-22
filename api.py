@@ -421,6 +421,19 @@ def create_app() -> FastAPI:
         return {"source_id": source_id, "deleted_events": n,
                 "deleted_orphan_entities": len(orphan_ids)}
 
+    # ---- 单个文档删除（按 document_id 删，保留同 source 下其他 document）----
+    @app.delete("/api/documents/{source_id}/documents/{document_id}",
+                summary="删除单个文档（按 document_id）")
+    async def delete_single_document(source_id: str, document_id: str):
+        pipe = _ingest_pipeline()
+        if not await pipe.db.get_source(source_id):
+            raise HTTPException(404, "source 不存在")
+        n, orphan_ids = await pipe.delete_document(source_id, document_id)
+        log.info("删除单个文档 source_id={} document_id={} 删除事件数={} 清理孤儿实体={}",
+                 source_id, document_id, n, len(orphan_ids))
+        return {"source_id": source_id, "document_id": document_id,
+                "deleted_events": n, "deleted_orphan_entities": len(orphan_ids)}
+
     # ---- 文档重建（更新内容：先入新后删旧，避免空洞窗口）----
     @app.put("/api/documents/{source_id}", summary="更新文档内容（重建）")
     async def rebuild_document(

@@ -490,7 +490,7 @@ async function loadDetail() {
         ${d.title ? `<div class="desc">原文标题: ${esc(d.title)}</div>`:''}
         <div class="actions">
           <button class="small ghost" onclick="downloadDoc('${s.id}')">下载原文</button>
-          <button class="small danger" onclick="deleteDoc('${s.id}')">删除</button>
+          <button class="small danger" onclick="deleteDoc('${s.id}', '${d.id||''}')">删除</button>
         </div>
       </div>
       ${d.content ? `<div class="snippet" style="max-height:240px;overflow:auto">${esc(d.content)}</div>`:''}`;
@@ -503,11 +503,19 @@ function downloadDoc(id) {
 }
 
 // ---------- 删除 ----------
-async function deleteDoc(id) {
-  if (!confirm('确认删除该文档？关联的事件/向量将一并清理。')) return;
+// source_id 必填；document_id 可选，传入则按 document_id 删单个文档，否则删整个 source
+async function deleteDoc(sourceId, docId) {
+  const single = docId && docId !== 'undefined' && docId !== '';
+  const msg = single
+    ? `确认删除该单个文档？\nsource_id: ${sourceId}\ndocument_id: ${docId}\n关联的事件/向量将一并清理，source 元数据保留。`
+    : `确认删除该文档？关联的事件/向量将一并清理。`;
+  if (!confirm(msg)) return;
   try {
-    const data = await api('/api/documents/' + encodeURIComponent(id), { method:'DELETE' });
-    toast(`已删除（事件 ${data.deleted_events} 条）`);
+    const url = single
+      ? '/api/documents/' + encodeURIComponent(sourceId) + '/documents/' + encodeURIComponent(docId)
+      : '/api/documents/' + encodeURIComponent(sourceId);
+    const data = await api(url, { method:'DELETE' });
+    toast(`已删除（事件 ${data.deleted_events} 条，孤儿实体 ${data.deleted_orphan_entities} 个）`);
     loadDocs();
   } catch(e) { toast('删除失败: ' + e.message, false); }
 }

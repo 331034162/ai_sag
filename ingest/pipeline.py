@@ -356,6 +356,34 @@ class IngestPipeline:
                 log.error("孤儿实体向量删除失败，靠对账兜底 ids={} err={}", orphan_entity_ids, e)
         return n, orphan_entity_ids
 
+    async def delete_document(self, source_id: str, document_id: str) -> tuple[int, list[str]]:
+        """删除单个 document：先删向量库 → 再删关系库 → 最后删孤儿实体向量。
+
+        与 delete_source 的区别：
+          - delete_source 删整个 source（所有 document + sources 元数据）
+          - delete_document 只删指定 document_id 的数据（保留 source 下其他 document）
+
+        适用场景：一个 source 下有多个 document，只删其中一个。
+        """
+        # 1. 先删向量库（按 source_id + document_id 过滤，走 GIN 索引）
+        try:
+            await self.vectors.adelete_by_document(source_id, document_id)
+        except Exception as e:
+            log.error("向量库删除失败，靠对账兜底 source_id={} document_id={} err={}",
+                      source_id, document_id, e)
+
+        # 2. 关系库事务删除（含查孤儿实体 id）
+        n, orphan_entity_ids = await self.db.delete_by_document(source_id, document_id)
+
+        # 3. 删孤儿实体向量（失败靠对账兜底）
+        if orphan_entity_ids:
+            log.info("清理孤儿实体向量 数量={} ids={}", len(orphan_entity_ids), orphan_entity_ids)
+            try:
+                await self.vectors.adelete_entities_by_ids(orphan_entity_ids)
+            except Exception as e:
+                log.error("孤儿实体向量删除失败，靠对账兜底 ids={} err={}", orphan_entity_ids, e)
+        return n, orphan_entity_ids
+
     async def close(self) -> None:
         if self._reconcile_task and not self._reconcile_task.done():
             self._reconcile_task.cancel()
