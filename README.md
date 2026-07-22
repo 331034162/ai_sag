@@ -161,7 +161,7 @@ Document (source)
 
 ### 文档上传与管理
 
-- 多格式上传：PDF / Word / Excel / Markdown / 纯文本
+- 多格式上传：PDF / Word / Excel / Markdown / 纯文本 / CSV / 图片（PNG/JPG/BMP/TIFF/WEBP，走 OCR）
 - 文档 CRUD：列表浏览、详情查看、内容更新、下载原文、删除（含关联清理）
 - 全文检索：关键词命中 + 上下文片段高亮
 - 归档管理：支持文档归档/取消归档，按状态筛选
@@ -405,7 +405,7 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 | **关系数据库** | PostgreSQL + asyncpg（推荐）/ MySQL + aiomysql | PG ≥ 13 / MySQL ≥ 8.0 |
 | **LLM 后端** | DeepSeek / OpenAI / vLLM / Ollama | OpenAI 兼容协议 |
 | **Embedding** | BAAI/bge-small-zh-v1.5 / Qwen3-Embedding-0.6B | 本地推理 |
-| **文档解析** | PyMuPDF + python-docx + openpyxl + PaddleOCR / RapidOCR | — |
+| **文档解析** | PyMuPDF + python-docx + openpyxl + PaddleOCR / RapidOCR + OpenCV | — |
 | **文本切分** | 自研 ChunkSplitter（语义/Markdown/代码等多模式） | 底层依赖 LlamaIndex |
 | **异步运行时** | asyncio（全链路异步 I/O） | Python 3.10+ |
 | **日志** | loguru | 控制台 + 文件双输出 |
@@ -463,7 +463,7 @@ your-repo/
     ├── vector_store/           ← 向量库封装（PGVector 推荐 / Chroma/FAISS/Milvus，5 个 collection）
     ├── storage/                ← 关系库持久化（PostgreSQL 推荐 / MySQL，6 张表，全异步）
     ├── llm/                    ← DeepSeek / OpenAI 兼容 LLM 封装
-    ├── loader/                 ← 文件加载（md/txt/docx/pdf/xlsx）
+    ├── loader/                 ← 文件加载（md/txt/docx/pdf/xlsx/csv/图片）
     ├── doc_parser/             ← 文档深度解析（OCR、版式分析等）
     ├── cleaner/                ← 文本清洗
     ├── static/                 ← Web 前端页面
@@ -478,7 +478,7 @@ your-repo/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/documents` | 上传文件（md/txt/docx/pdf/xlsx） |
+| `POST` | `/api/documents` | 上传文件（md/txt/docx/pdf/xlsx/csv/图片） |
 | `POST` | `/api/documents/text` | 上传纯文本 JSON |
 | `GET` | `/api/documents` | 文档列表（关键词/分页/归档筛选） |
 | `GET` | `/api/documents/search` | 全文搜索（含上下文片段） |
