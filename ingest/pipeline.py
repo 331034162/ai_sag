@@ -79,6 +79,7 @@ class IngestPipeline:
             max_overflow=self.cfg.mysql.max_overflow,
             pool_timeout=self.cfg.mysql.pool_timeout,
             pool_recycle=self.cfg.mysql.pool_recycle,
+            faiss_map_enabled=(self.cfg.vector_store.backend.lower() == "faiss"),
         )
         self.vectors = create_vector_store(self.cfg, mysql_store=self.db)
         self._reconcile_task: asyncio.Task | None = None

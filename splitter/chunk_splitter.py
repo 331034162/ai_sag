@@ -79,7 +79,6 @@ class ChunkSplitter(BaseSplitter):
             chunks.append(Chunk(
                 id=str(uuid.uuid4()), document_id=document_id, source_id=source_id,
                 rank_index=i, heading=heading, content=text,
-                metadata={"node_id": node.node_id, **(doc.metadata or {})},
             ))
         return chunks
 

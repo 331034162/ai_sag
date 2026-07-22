@@ -70,7 +70,6 @@ class DocxReader(BaseReader):
             return LoadedDocument(
                 title=title or os.path.basename(path), content=content,
                 source_path=path, file_type="docx",
-                metadata={"word_parse_fallback": str(e)},
             )
         # heading 修复：剥掉 WordParser 自动生成的元信息头（# 临时文件名 + > 源文件 + > 段落统计 + ---）
         # 否则 chunk.heading 会被临时文件名（如 tmpqvuvlbc8）污染，且统计行会被当正文
@@ -79,11 +78,6 @@ class DocxReader(BaseReader):
         return LoadedDocument(
             title=doc_title, content=content,
             source_path=path, file_type="docx",
-            metadata={
-                "paragraph_count": result.paragraph_count,
-                "table_count": result.table_count,
-                "image_count": result.image_count,
-            },
         )
 
     @staticmethod
@@ -152,12 +146,10 @@ class PDFReader(BaseReader):
             return LoadedDocument(
                 title=title or os.path.basename(path), content=content,
                 source_path=path, file_type="pdf",
-                metadata={"pdf_parse_fallback": str(e)},
             )
         return LoadedDocument(
             title=title or os.path.basename(path), content=result.markdown_text or "",
             source_path=path, file_type="pdf",
-            metadata={"total_pages": result.total_pages, "pdf_type": result.pdf_type},
         )
 
 
@@ -313,9 +305,4 @@ class ImageReader(BaseReader):
         return LoadedDocument(
             title=title or os.path.basename(path), content=content,
             source_path=path, file_type="image",
-            metadata={
-                "ocr_backend": backend,
-                "has_watermark": result.has_watermark,
-                "has_stamp": result.has_stamp,
-            },
         )

@@ -335,7 +335,7 @@ async function api(path, opts={}) {
   } else {
     opts.headers['X-Trace-Id'] = serialNo;
   }
-  const r = await fetch(url, opts);
+  const r = await fetch(url, { ...opts, cache: 'no-store' });
   // 从响应头捕获后端返回的流水号（若后端未返回则使用前端生成的）
   _lastSerialNo = r.headers.get('X-Trace-Id') || serialNo;
   if (!r.ok) {

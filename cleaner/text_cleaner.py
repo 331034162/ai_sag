@@ -68,7 +68,6 @@ class TextCleaner:
         return LoadedDocument(
             title=doc.title, content=text,
             source_path=doc.source_path, file_type=doc.file_type,
-            metadata={**doc.metadata, "cleaned": True},
         )
 
     def clean_text(self, text: str, *, file_type: str = "md") -> str:

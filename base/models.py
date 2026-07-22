@@ -27,7 +27,6 @@ class LoadedDocument:
     content: str
     source_path: str = ""
     file_type: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -39,7 +38,6 @@ class Chunk:
     rank_index: int
     heading: str
     content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
