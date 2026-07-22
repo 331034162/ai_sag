@@ -48,26 +48,33 @@ llama-index-core>=0.12.0      # 核心：索引、查询引擎、Agent
 llama-index>=0.12.0           # 聚合安装入口
 llama-index-llms-openai>=0.3.0            # OpenAI 兼容 LLM（DeepSeek 等）
 llama-index-embeddings-huggingface>=0.4.0 # HuggingFace 本地 Embedding
-llama-index-vector-stores-chroma>=0.3.0   # ChromaDB 向量存储集成
 
 # ------------------------------------------------------------
 # 向量数据库（四选一，通过 AISAG_VECTOR_STORE_BACKEND 切换）
+# 推荐使用 pgvector：与关系库共用一个 PostgreSQL，无需额外中间件
 # ------------------------------------------------------------
-chromadb>=1.0.0                            # ChromaDB — 本地轻量持久化向量库（默认后端）
-faiss-cpu>=1.8.0                           # FAISS — 单机内存向量检索（CPU 版，GPU 版见下方说明）
+# PGVector（推荐，与关系库合一部署）
+llama-index-vector-stores-postgres>=0.3.0  # LlamaIndex PGVector 集成
+sqlalchemy>=2.0.0                          # ORM 与连接管理（PGVector 后端元数据查询用）
+# ChromaDB（本地轻量持久化）
+chromadb>=1.0.0                            # ChromaDB 向量库
+llama-index-vector-stores-chroma>=0.3.0    # LlamaIndex ChromaDB 集成
+# FAISS（单机内存向量检索，CPU 版，GPU 版见下方说明）
+faiss-cpu>=1.8.0                           # FAISS 索引
 llama-index-vector-stores-faiss>=0.3.0     # LlamaIndex FAISS 集成
+# Milvus（分布式向量库）
 pymilvus>=2.4.0                            # Milvus Python 客户端
 llama-index-vector-stores-milvus>=0.3.0    # LlamaIndex Milvus 集成
-llama-index-vector-stores-postgres>=0.3.0  # LlamaIndex PGVector 集成
-asyncpg>=0.29.0                            # PostgreSQL 异步驱动（PGVector 后端）
-sqlalchemy>=2.0.0                          # ORM 与连接管理（PGVector 后端元数据查询用）
 # 注：如需 FAISS GPU 加速，改用 faiss-gpu（需 CUDA Toolkit 与 NVIDIA 驱动），
 # 安装：pip install faiss-gpu-cu12  或  conda install -c conda-forge faiss-gpu
 
 # ------------------------------------------------------------
-# 关系型数据库（SAG 事件-实体超边存储）
+# 关系型数据库（SAG 事件-实体超边存储，PostgreSQL 推荐 / MySQL）
 # ------------------------------------------------------------
-aiomysql>=0.2.0               # MySQL 异步驱动（全链路异步改造）
+asyncpg>=0.29.0               # PostgreSQL 异步驱动（关系库 / PGVector 异步引擎，推荐）
+psycopg2-binary>=2.9.0        # PostgreSQL 同步驱动（PGVector 同步引擎元数据查询用）
+pgvector>=0.3.0               # pgvector Python 类型支持（向量列类型映射）
+aiomysql>=0.2.0               # MySQL 异步驱动（备选）
 
 # ------------------------------------------------------------
 # Embedding / 模型推理

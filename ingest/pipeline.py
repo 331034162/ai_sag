@@ -368,13 +368,13 @@ class IngestPipeline:
     async def _reconcile(self) -> None:
         """对账 + 硬删除：清理四类数据。
 
-        1. MySQL 中 vector_synced=False 的 source（入库崩溃残留 + 删除中崩溃残留）
-        2. 向量库中有但 MySQL 已不存在的 source_id（删除流程中 source 被物理删但向量库删除失败）
-        3. 向量库 entities 中有但 MySQL 已不存在的 entity_id（孤儿实体向量，删除步骤4失败残留）
-        4. MySQL 中 deleted_at IS NOT NULL 的软删除事件（硬删除 MySQL + 向量库）
+        1. 关系库中 vector_synced=False 的 source（入库崩溃残留 + 删除中崩溃残留）
+        2. 向量库中有但关系库已不存在的 source_id（删除流程中 source 被物理删但向量库删除失败）
+        3. 向量库 entities 中有但关系库已不存在的 entity_id（孤儿实体向量，删除步骤4失败残留）
+        4. 关系库中 deleted_at IS NOT NULL 的软删除事件（硬删除 关系库 + 向量库）
         """
         try:
-            # 第一类：MySQL 标记未同步的 source
+            # 第一类：关系库标记未同步的 source
             unsynced = await self.db.find_unsynced_sources()
             for sid in unsynced:
                 log.warning("对账：发现未同步向量的 source，清理中 source_id={}", sid)
@@ -382,7 +382,7 @@ class IngestPipeline:
                 try:
                     _, orphan_ids_first = await self.db.delete_by_source(sid)
                 except Exception as e:
-                    log.warning("对账：MySQL 删除 unsynced source 失败（可能已物理删除）source_id={} err={}", sid, e)
+                    log.warning("对账：关系库删除 unsynced source 失败（可能已物理删除）source_id={} err={}", sid, e)
                 try:
                     await self.vectors.adelete_by_source(sid)
                 except Exception as e:
@@ -395,21 +395,21 @@ class IngestPipeline:
                         log.error("对账：清理孤儿实体向量失败 source_id={} ids={} err={}",
                                   sid, orphan_ids_first, e)
 
-            # 第二类：向量库中有但 MySQL 已不存在的孤儿 source_id
-            mysql_source_ids = set(await self.db.list_all_source_ids())
+            # 第二类：向量库中有但关系库已不存在的孤儿 source_id
+            db_source_ids = set(await self.db.list_all_source_ids())
             vector_source_ids = set(await self.vectors.alist_source_ids())
-            orphan_source_ids = vector_source_ids - mysql_source_ids
+            orphan_source_ids = vector_source_ids - db_source_ids
             for sid in orphan_source_ids:
-                log.warning("对账：发现孤儿向量（MySQL 无此 source），清理 source_id={}", sid)
+                log.warning("对账：发现孤儿向量（关系库无此 source），清理 source_id={}", sid)
                 try:
                     await self.vectors.adelete_by_source(sid)
                 except Exception as e:
                     log.error("对账：清理孤儿向量失败 source_id={} err={}", sid, e)
 
-            # 第三类：向量库 entities 中有但 MySQL 已不存在的孤儿 entity_id
-            mysql_entity_ids = set(await self.db.list_all_entity_ids())
+            # 第三类：向量库 entities 中有但关系库已不存在的孤儿 entity_id
+            db_entity_ids = set(await self.db.list_all_entity_ids())
             vector_entity_ids = set(await self.vectors.alist_all_entity_ids())
-            orphan_entity_ids = vector_entity_ids - mysql_entity_ids
+            orphan_entity_ids = vector_entity_ids - db_entity_ids
             if orphan_entity_ids:
                 log.warning("对账：发现孤儿实体向量 数量={} ids={}", len(orphan_entity_ids), orphan_entity_ids)
                 try:

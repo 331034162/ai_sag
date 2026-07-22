@@ -38,7 +38,7 @@ def create_db_store(cfg: "Config", *, faiss_map_enabled: bool = False) -> MysqlS
             pool_recycle=cfg.pg.pool_recycle,
             faiss_map_enabled=faiss_map_enabled,
         )
-    # 默认 mysql
+    # 其他后端（mysql）
     return MysqlStore(
         host=cfg.mysql.host, port=cfg.mysql.port,
         user=cfg.mysql.user, password=cfg.mysql.password,

@@ -397,7 +397,7 @@ class VectorStoreConfig:
       - 其他模型参考其 model card
     切换 embedding 后端时同步修改 dim，否则写入会报维度不匹配错误。
     """
-    backend: str = field(default_factory=lambda: _env("AISAG_VECTOR_STORE_BACKEND", "chroma").lower())
+    backend: str = field(default_factory=lambda: _env("AISAG_VECTOR_STORE_BACKEND", "pgvector").lower())
     # 向量维度：faiss/milvus/pgvector 创建索引/集合/表时需要，必须与 embedding 输出维度一致
     dim: int = field(default_factory=lambda: int(_env("AISAG_VECTOR_STORE_DIM", "512")))
     # ---- Chroma 后端 ----
@@ -425,15 +425,21 @@ class VectorStoreConfig:
         "AISAG_PG_CONNECTION_STRING", "postgresql://postgres:postgres@localhost:5432/sag"))
     # Schema 名（默认 public）
     pg_schema_name: str = field(default_factory=lambda: _env("AISAG_PG_SCHEMA_NAME", "public"))
-    # 表名前缀：5 个 collection 会创建为 {prefix}chunks / {prefix}event_titles / ...
+    # 表名前缀：实际表名为 data_{prefix}{collection}（LlamaIndex 自动加 data_ 前缀）
     pg_table_prefix: str = field(default_factory=lambda: _env("AISAG_PG_TABLE_PREFIX", "sag_"))
-    # 是否使用 HNSW 索引（True=HNSW 速度快但写入慢；False=IVM_FLAT 精确检索）
+    # 是否使用 HNSW 索引（True=HNSW 速度快但写入慢；False=顺序扫描精确检索）
     pg_hnsw_index: bool = field(
         default_factory=lambda: _env("AISAG_PG_HNSW_INDEX", "true").lower() == "true")
-    # 是否使用异步驱动（asyncpg）：True=异步连接池，False=同步 psycopg2
-    # 项目全链路异步，建议保持 True
-    pg_async: bool = field(
-        default_factory=lambda: _env("AISAG_PG_ASYNC", "true").lower() == "true")
+    # HNSW 索引参数（仅 pg_hnsw_index=True 时生效）
+    # hnsw_m：每个节点在每层图中的最大连接数（默认 16）
+    pg_hnsw_m: int = field(
+        default_factory=lambda: int(_env("AISAG_PG_HNSW_M", "16")))
+    # hnsw_ef_construction：建索引时候选邻居列表大小（默认 64）
+    pg_hnsw_ef_construction: int = field(
+        default_factory=lambda: int(_env("AISAG_PG_HNSW_EF_CONSTRUCTION", "64")))
+    # hnsw_ef_search：查询时候选列表大小（默认 40）
+    pg_hnsw_ef_search: int = field(
+        default_factory=lambda: int(_env("AISAG_PG_HNSW_EF_SEARCH", "40")))
 
 
 @dataclass
@@ -675,9 +681,9 @@ class PdfDocParserConfig:
 
 @dataclass
 class Config:
-    # 数据库后端：mysql（默认）| postgresql
+    # 数据库后端：postgresql（推荐，与 pgvector 向量库合一部署）| mysql
     # 环境变量 AISAG_DB_BACKEND 控制
-    db_backend: str = field(default_factory=lambda: _env("AISAG_DB_BACKEND", "mysql").lower())
+    db_backend: str = field(default_factory=lambda: _env("AISAG_DB_BACKEND", "postgresql").lower())
     mysql: MysqlConfig = field(default_factory=MysqlConfig)
     pg: PgConfig = field(default_factory=PgConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)

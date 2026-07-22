@@ -51,24 +51,131 @@ class PGVectorStoreBackend(BaseVectorStore):
         self._prefix = cfg.vector_store.pg_table_prefix
         self._schema = cfg.vector_store.pg_schema_name
         self._hnsw = cfg.vector_store.pg_hnsw_index
-        self._async = cfg.vector_store.pg_async
+
+        # 同步连接串：postgresql://user:pwd@host:port/db
+        conn_str = cfg.vector_store.pg_connection_string
+        # 异步连接串：将 postgresql:// 替换为 postgresql+asyncpg://
+        # PGVectorStore._connect() 会同时创建同步 + 异步引擎，两者都必须有效
+        async_conn_str = conn_str.replace(
+            "postgresql://", "postgresql+asyncpg://", 1)
 
         # 每个 collection 一个 PGVectorStore 实例（独立表）
         self._stores: dict[Collection, PGVectorStore] = {}
+        # hnsw_kwargs 必须包含全部 4 个键，库查询时会直接 self.hnsw_kwargs["hnsw_ef_search"]
+        # 缺任何一个都会 KeyError（即使 hnsw_index=False 也会走到这段代码）
+        hnsw_kwargs = {
+            "hnsw_index": self._hnsw,
+            "hnsw_ef_construction": cfg.vector_store.pg_hnsw_ef_construction,
+            "hnsw_ef_search": cfg.vector_store.pg_hnsw_ef_search,
+            "hnsw_m": cfg.vector_store.pg_hnsw_m,
+        } if self._hnsw else None
         for name in _COLLECTIONS:
             table_name = f"{self._prefix}{name}"
             store = PGVectorStore.from_params(
-                connection_string=cfg.vector_store.pg_connection_string,
+                connection_string=conn_str,
+                async_connection_string=async_conn_str,
                 table_name=table_name,
                 schema_name=self._schema,
                 embed_dim=self._dim,
-                hnsw_kwargs={"hnsw_index": self._hnsw},
-                async_=self._async,
+                hnsw_kwargs=hnsw_kwargs,
+                use_jsonb=True,  # metadata_ 列用 jsonb（支持 GIN 索引，过滤查询更快）
             )
             self._stores[name] = store
-        log.info("PGVector 向量库初始化完成 conn={} schema={} prefix={} dim={} hnsw={}",
-                 cfg.vector_store.pg_connection_string, self._schema, self._prefix,
-                 self._dim, self._hnsw)
+
+        # 补建 GIN 索引（metadata_ jsonb 列）—— LlamaIndex 不会自动建，需要手动补
+        # 用途：加速 DELETE WHERE metadata_->>'source_id' = $1 这类按 metadata 过滤的查询
+        # 同时提前建表+HNSW+ref_doc_id 索引，避免 LlamaIndex 懒加载导致首次启动索引缺失
+        self._ensure_tables_and_indexes()
+
+        log.info("PGVector 向量库初始化完成 conn={} schema={} prefix={} dim={} hnsw={} m={} ef_c={} ef_s={}",
+                 conn_str, self._schema, self._prefix, self._dim, self._hnsw,
+                 cfg.vector_store.pg_hnsw_m, cfg.vector_store.pg_hnsw_ef_construction,
+                 cfg.vector_store.pg_hnsw_ef_search)
+
+    def _ensure_tables_and_indexes(self) -> None:
+        """启动时一次性建好所有向量表 + 索引（幂等，已存在则跳过）。
+
+        背景：PGVectorStore.from_params 是懒加载，表和索引在首次 add/query 时才创建。
+        这会导致：
+          1. 启动时表不存在，无法提前建 GIN 索引
+          2. LlamaIndex 只建主键/HNSW/ref_doc_id 索引，不建 GIN 索引
+
+        本方法用 psycopg2 独立连接，提前建好：
+          - 表（CREATE TABLE IF NOT EXISTS，与 LlamaIndex use_jsonb=True 一致）
+          - HNSW 向量索引（按配置的 m / ef_construction 参数）
+          - ref_doc_id btree 索引（LlamaIndex 内部按文档删除时用）
+          - GIN metadata 索引（按 source_id/document_id 过滤删除时用）
+
+        所有 CREATE 都是 IF NOT EXISTS，幂等，重复执行不报错。
+        """
+        import psycopg2
+        from urllib.parse import urlparse
+
+        # 解析连接串：postgresql://user:pwd@host:port/db
+        parsed = urlparse(self._cfg.vector_store.pg_connection_string)
+        conn_params = {
+            "host": parsed.hostname,
+            "port": parsed.port or 5432,
+            "user": parsed.username,
+            "password": parsed.password,
+            "dbname": parsed.path.lstrip("/"),
+        }
+
+        # HNSW 索引参数
+        m = self._cfg.vector_store.pg_hnsw_m
+        ef_c = self._cfg.vector_store.pg_hnsw_ef_construction
+        dim = self._dim
+        schema = self._schema
+
+        try:
+            with psycopg2.connect(**conn_params) as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    for name in _COLLECTIONS:
+                        table = self._real_table_name(name)
+                        full_table = f"{schema}.{table}"
+
+                        # 1. 建表（与 LlamaIndex use_jsonb=True 时建的一致，IF NOT EXISTS 幂等）
+                        # 提前建表不影响 LlamaIndex，它内部也是 CREATE TABLE IF NOT EXISTS
+                        cur.execute(f"""
+                            CREATE TABLE IF NOT EXISTS {full_table} (
+                                id BIGSERIAL PRIMARY KEY,
+                                "text" VARCHAR NOT NULL,
+                                metadata_ JSONB NULL,
+                                node_id VARCHAR NULL,
+                                embedding VECTOR({dim}) NULL
+                            )
+                        """)
+
+                        # 2. HNSW 向量索引（与 LlamaIndex hnsw_kwargs 一致）
+                        if self._hnsw:
+                            cur.execute(f"""
+                                CREATE INDEX IF NOT EXISTS {table}_embedding_idx
+                                ON {full_table} USING hnsw (embedding vector_cosine_ops)
+                                WITH (m={m}, ef_construction={ef_c})
+                            """)
+                        else:
+                            cur.execute(f"""
+                                CREATE INDEX IF NOT EXISTS {table}_embedding_idx
+                                ON {full_table} USING hnsw (embedding vector_cosine_ops)
+                            """)
+
+                        # 3. ref_doc_id btree 索引（LlamaIndex 内部按文档删除时用）
+                        cur.execute(f"""
+                            CREATE INDEX IF NOT EXISTS {table}_ref_doc_id_idx
+                            ON {full_table} USING btree ((metadata_->>'ref_doc_id'))
+                        """)
+
+                        # 4. GIN 索引（新增：按 source_id/document_id 过滤删除时用）
+                        cur.execute(f"""
+                            CREATE INDEX IF NOT EXISTS {table}_metadata_gin_idx
+                            ON {full_table} USING GIN (metadata_ jsonb_path_ops)
+                        """)
+
+                        log.info("表+索引初始化完成 table={}（表/HNSW/ref_doc_id/GIN）", full_table)
+        except Exception as e:
+            # 不影响启动，LlamaIndex 首次 add 时会自己建表
+            log.warning("表+索引初始化失败（不影响启动，LlamaIndex 会兜底建表）err={}", e)
 
     def _store(self, name: Collection) -> PGVectorStore:
         return self._stores[name]
@@ -106,11 +213,21 @@ class PGVectorStoreBackend(BaseVectorStore):
                 uniq_idx.append(i)
 
         # 2. 构造 TextNode 列表
+        # 注意：document_id 是 LlamaIndex 框架保留字段名，直接放在 metadata 里会被
+        # 框架自己的 document_id（来自 relationships）覆盖成 "None"。
+        # 解决：从 meta 里取 document_id 设置到 relationships，让框架字段有正确值。
+        # 这样外层 metadata_ 的 document_id / ref_doc_id 都会正确，嵌套 metadata 也保留。
+        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
         nodes: list[TextNode] = []
         for i in uniq_idx:
             meta = (metadatas[i] if metadatas else {}) or {}
+            doc_id = meta.get("document_id")
+            relationships: dict = {}
+            if doc_id:
+                relationships[NodeRelationship.SOURCE] = RelatedNodeInfo(node_id=doc_id)
             nodes.append(TextNode(
-                id_=ids[i], text=texts[i], embedding=embeddings[i], metadata=meta))
+                id_=ids[i], text=texts[i], embedding=embeddings[i],
+                metadata=meta, relationships=relationships))
 
         # 3. PGVectorStore.add 内部会按 node_id upsert（同 id 覆盖）
         if nodes:
@@ -160,35 +277,45 @@ class PGVectorStoreBackend(BaseVectorStore):
     def _delete_by_filter(self, name: Collection, *,
                           source_ids: list[str] | None = None,
                           document_ids: list[str] | None = None) -> None:
-        """按 metadata 过滤删除（先查 id 再按 id 删）。
+        """按 metadata 过滤删除（直接拼 SQL，走 GIN 索引）。
 
-        PGVectorStore 没有直接的 delete-by-metadata API，分两步：
-        1. 用零向量查询取出所有匹配的 node_id（filter 生效）
-        2. 调 delete_nodes(node_ids=...) 按 PK 删除
+        不再用 LlamaIndex 的"零向量查询 + delete_nodes"两步法：
+          - 旧方案：query(零向量, filter) → 取 node_id → delete_nodes(ids)
+                    受 similarity_top_k 限制，大数据量可能漏删；HNSW + filter 顺序不可控
+          - 新方案：DELETE FROM table WHERE metadata_->>'source_id' = ANY($1)
+                    一条 SQL 搞定，走 GIN 索引，不受 top_k 限制
         """
+        if not source_ids and not document_ids:
+            return
         try:
-            filters = self._build_filters(source_ids, document_ids)
-            if filters is None:
-                return
+            from sqlalchemy import text
             store = self._store(name)
-            # 用零向量查询仅用于激活 metadata filter（PGVectorStore.query 会先做向量搜索再过滤，
-            # 零向量排序无意义但能返回 filter 匹配的所有 row，受 similarity_top_k 限制）
-            # 取一个较大的 top_k 保证覆盖
-            vsq = VectorStoreQuery(
-                query_embedding=[0.0] * self._dim,
-                similarity_top_k=100000,
-                mode="default",
-                filters=filters,
-            )
-            try:
-                result = store.query(vsq)
-                node_ids = [n.node_id for n in (result.nodes or [])]
-            except Exception:
-                node_ids = []
-            if node_ids:
-                store.delete_nodes(node_ids=node_ids)
+            engine = getattr(store, "_engine", None) or getattr(store, "_sync_engine", None)
+            if engine is None:
+                log.warning("PGVectorStore 无可用 engine，跳过删除 collection={}", name)
+                return
+            table = self._real_table_name(name)
+
+            # 动拼 WHERE 条件：source_id 和 document_id 都支持 ANY 数组
+            conditions = []
+            params: dict[str, Any] = {}
+            if source_ids:
+                conditions.append("metadata_->>'source_id' = ANY(:sids)")
+                params["sids"] = list(source_ids)
+            if document_ids:
+                conditions.append("metadata_->>'document_id' = ANY(:dids)")
+                params["dids"] = list(document_ids)
+            where_clause = " AND ".join(conditions)
+
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(f"DELETE FROM {self._schema}.{table} WHERE {where_clause}"),
+                    params,
+                )
+                deleted = result.rowcount or 0
+                conn.commit()
             log.info("向量删除 collection={} source_ids={} document_ids={} 删除数={}",
-                     name, source_ids, document_ids, len(node_ids))
+                     name, source_ids, document_ids, deleted)
         except Exception as e:
             log.error("向量删除失败 collection={} source_ids={} document_ids={} err={}",
                       name, source_ids, document_ids, e)
@@ -232,7 +359,7 @@ class PGVectorStoreBackend(BaseVectorStore):
             if engine is None:
                 log.warning("PGVectorStore 无可用 engine，无法批量取向量 collection={}", name)
                 return {}
-            table_name = f"{self._prefix}{name}"
+            table_name = self._real_table_name(name)
             # node_id 在 PGVectorStore 中存为 TEXT 列；embedding 列名为 embedding
             # 用 ANY(:ids) 防止 IN 子句参数数量超限
             with engine.connect() as conn:
@@ -254,6 +381,14 @@ class PGVectorStoreBackend(BaseVectorStore):
                         name, len(ids), e)
         return result
 
+    def _real_table_name(self, name: Collection) -> str:
+        """获取 PGVectorStore 实际建表的表名。
+
+        LlamaIndex 库会自动在 table_name 前加 "data_" 前缀（见 base.py:132），
+        所以传入 "sag_chunks" 实际建出来的是 "data_sag_chunks"。
+        """
+        return f"data_{self._prefix}{name}"
+
     def list_source_ids(self) -> list[str]:
         """从 chunks collection 查询所有 source_id（去重）。"""
         try:
@@ -262,7 +397,7 @@ class PGVectorStoreBackend(BaseVectorStore):
                 or getattr(self._store("chunks"), "_sync_engine", None)
             if engine is None:
                 return []
-            table_name = f"{self._prefix}chunks"
+            table_name = self._real_table_name("chunks")
             # metadata_ 是 JSONB 列（PGVectorStore 默认列名）
             with engine.connect() as conn:
                 rows = conn.execute(text(
@@ -283,7 +418,7 @@ class PGVectorStoreBackend(BaseVectorStore):
                 or getattr(self._store("entities"), "_sync_engine", None)
             if engine is None:
                 return []
-            table_name = f"{self._prefix}entities"
+            table_name = self._real_table_name("entities")
             with engine.connect() as conn:
                 rows = conn.execute(text(
                     f"SELECT node_id FROM {table_name}"
