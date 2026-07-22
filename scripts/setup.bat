@@ -83,14 +83,14 @@ if /i "%ACTION%"=="help" (
     echo 选项：
     echo   （无参数）   CPU 模式，安装依赖 + 启动服务
     echo   gpu         GPU 模式，安装 CUDA 依赖 + 启动服务
-    echo   check       仅检查 Python / MySQL / .env 环境
+    echo   check       仅检查 Python / 关系库 / .env 环境
     echo   install     仅安装依赖，不启动服务
     echo   start       仅启动 API + Web UI
     echo   help        显示此帮助
     echo.
     echo 首次使用：
     echo   1. 准备 .env 文件（会从 .env.example 复制模板）
-    echo   2. 编辑 .env 填写 MySQL / LLM API Key / Embedding 路径
+    echo   2. 编辑 .env 填写 关系库（MySQL/PG）/ LLM API Key / Embedding 路径
     echo   3. 运行 setup.bat
     echo.
     echo 更多帮助：docs\STARTUP.md
@@ -190,8 +190,8 @@ if not exist "%SRC_DIR%\.env" (
     echo   %C_BOLD%============================================%C_RESET%
     echo   %C_YELLOW%  请编辑 .env 文件，填写以下必填项：%C_RESET%
     echo.
-    echo     1. MySQL 连接信息（SAG_MYSQL_*）
-    echo     2. LLM API Key 及地址（SAG_LLM_*）
+    echo     1. 关系库后端（AISAG_DB_BACKEND=mysql^|postgresql）及对应连接信息
+    echo     2. LLM API Key 及地址（SAG_LLM_*，配合 llm_profiles.yaml）
     echo     3. Embedding 模型路径（SAG_EMBEDDING_MODEL_PATH）
     echo.
     echo   文件位置: %SRC_DIR%\.env
@@ -275,12 +275,12 @@ if "%ENV_PATH%"=="NOT_FOUND" (
     echo   %C_GREEN%✓%C_RESET% .env 已找到
 )
 
-:: 检查 MySQL 连接 + LLM 场景 + Embedding
-python -c "import os; v=['SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD','SAG_LLM_PROFILE_ANSWER_LLM_NAME','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_RERANK_LLM_NAME','SAG_EMBEDDING_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
+:: 检查关系库连接（按 AISAG_DB_BACKEND 选择 MySQL/PG）+ LLM 场景 + Embedding
+python -c "import os; b=(os.environ.get('AISAG_DB_BACKEND') or 'mysql').lower(); d={'SAG_PG_HOST','SAG_PG_USER','SAG_PG_PASSWORD'} if b=='postgresql' else {'SAG_MYSQL_HOST','SAG_MYSQL_USER','SAG_MYSQL_PASSWORD'}; v=list(d)+['SAG_LLM_PROFILE_ANSWER_LLM_NAME','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME','SAG_LLM_PROFILE_RERANK_LLM_NAME','SAG_EMBEDDING_MODEL_PATH']; m=[k for k in v if not os.environ.get(k)]; exit(1 if m else 0)" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo   %C_YELLOW%⚠%C_RESET% 部分配置可能未填写，请检查 .env：
-    python -c "import os; v={'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码','SAG_LLM_PROFILE_ANSWER_LLM_NAME':'答案生成场景 profile 名','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME':'体裁分类场景 profile 名','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME':'事件抽取场景 profile 名','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME':'查询重写场景 profile 名','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME':'实体抽取场景 profile 名','SAG_LLM_PROFILE_RERANK_LLM_NAME':'重排场景 profile 名','SAG_EMBEDDING_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d}: 未设置') for k,d in v.items() if not os.environ.get(k)]"
+    python -c "import os; b=(os.environ.get('AISAG_DB_BACKEND') or 'mysql').lower(); d={'SAG_PG_HOST':'PostgreSQL地址','SAG_PG_USER':'PostgreSQL用户','SAG_PG_PASSWORD':'PostgreSQL密码'} if b=='postgresql' else {'SAG_MYSQL_HOST':'MySQL地址','SAG_MYSQL_USER':'MySQL用户','SAG_MYSQL_PASSWORD':'MySQL密码'}; v={**d,'SAG_LLM_PROFILE_ANSWER_LLM_NAME':'答案生成场景 profile 名','SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME':'体裁分类场景 profile 名','SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME':'事件抽取场景 profile 名','SAG_LLM_PROFILE_QUERY_REWRITE_LLM_NAME':'查询重写场景 profile 名','SAG_LLM_PROFILE_ENTITY_EXTRACT_LLM_NAME':'实体抽取场景 profile 名','SAG_LLM_PROFILE_RERANK_LLM_NAME':'重排场景 profile 名','SAG_EMBEDDING_MODEL_PATH':'Embedding模型路径'}; [print(f'     - {d_}: 未设置') for k,d_ in v.items() if not os.environ.get(k)]"
     echo.
 )
 

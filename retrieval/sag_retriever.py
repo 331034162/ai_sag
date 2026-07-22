@@ -28,7 +28,7 @@ from ..base import (
 from ..base.logger import get_logger
 from ..embeddings import BaseEmbedder
 from ..llm import LlmFactory
-from ..storage import MysqlStore
+from ..storage import MysqlStore, PgStore
 from ..vector_store import BaseVectorStore
 
 log = get_logger()
@@ -45,7 +45,7 @@ class _RerankOrder(BaseModel):
 
 
 class SagRetriever:
-    def __init__(self, cfg: Config, db: MysqlStore, vectors: BaseVectorStore,
+    def __init__(self, cfg: Config, db: MysqlStore | PgStore, vectors: BaseVectorStore,
                  embedder: BaseEmbedder, llm: LLM,
                  llm_factory: "LlmFactory | None" = None) -> None:
         self.cfg = cfg

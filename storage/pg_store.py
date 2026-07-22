@@ -1,7 +1,9 @@
-"""MySQL 异步存储层：事件-实体超边的 CRUD 与检索查询。
+"""PostgreSQL 异步存储层：事件-实体超边的 CRUD 与检索查询。
 
-基于 aiomysql 连接池，全链路异步。
+基于 asyncpg 连接池，全链路异步。
 核心：实体按 (type, normalized_name) 全局共享，通过 event_entities 超边串联跨文档事件。
+
+与 MysqlStore 接口完全一致，通过 create_db_store() 工厂函数按配置自动选择。
 """
 from __future__ import annotations
 
@@ -13,199 +15,139 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-import aiomysql
+import asyncpg
 
 from ..base import Chunk, Entity, Event, ExtractedEntity, ExtractedEvent
 from ..base.logger import get_logger
 
 log = get_logger()
 
-_SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_SCHEMA_PATH = Path(__file__).parent / "schema_pg.sql"
 
 
 def uuid_to_int64(uuid_str: str) -> int:
     """UUID 字符串 → int64 hash（用于 FAISS IndexIDMap2 的 id）。
 
     使用 blake2b 8 字节摘要，转为有符号 int64。
-    冲突概率：单表 10 亿条数据下约 1.16e-10（极低），MySQL 唯一索引兜底。
+    冲突概率：单表 10 亿条数据下约 1.16e-10（极低），唯一索引兜底。
     """
     h = hashlib.blake2b(uuid_str.encode("utf-8"), digest_size=8)
     return int.from_bytes(h.digest(), "big", signed=True)
 
 
-class MysqlStore:
+class PgStore:
+    """PostgreSQL 异步存储，接口与 MysqlStore 完全一致。"""
+
     def __init__(self, host: str, port: int, user: str, password: str, database: str, *,
                  pool_size: int = 10, max_overflow: int = 5,
                  pool_timeout: float = 30.0, pool_recycle: int = 3600,
                  faiss_map_enabled: bool = False) -> None:
-        self._conn_kwargs = dict(host=host, port=port, user=user, password=password,
-                                 db=database, charset="utf8mb4",
-                                 autocommit=False)
+        self._dsn = f"postgresql://{user}:{password}@{host}:{port}/{database}"
         self._pool_size = pool_size
         self._max_overflow = max_overflow
         self._pool_timeout = pool_timeout
         self._pool_recycle = pool_recycle
-        self._pool: aiomysql.Pool | None = None
-        # 仅 FAISS 后端需要写入 faiss_*_map 映射表（uuid ↔ int64 hash），
-        # Chroma/Milvus/PGVector 直接使用 UUID 不需映射表，关闭可减少无用的 DB 写入。
+        self._pool: asyncpg.Pool | None = None
         self._faiss_map_enabled = faiss_map_enabled
 
-    async def _get_pool(self) -> aiomysql.Pool:
+    # ---------------- 连接管理 ----------------
+
+    async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                **self._conn_kwargs,
-                minsize=1, maxsize=self._pool_size + self._max_overflow,
-                pool_recycle=self._pool_recycle,
+            self._pool = await asyncpg.create_pool(
+                dsn=self._dsn,
+                min_size=1,
+                max_size=self._pool_size + self._max_overflow,
+                command_timeout=self._pool_timeout,
             )
         return self._pool
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[aiomysql.Connection]:
+    async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
         """异步事务上下文：自动 commit/rollback，连接用完归还连接池。"""
         pool = await self._get_pool()
-        conn = await pool.acquire()
-        try:
-            await conn.begin()
-            yield conn
-            await conn.commit()
-        except Exception:
-            await conn.rollback()
-            raise
-        finally:
-            pool.release(conn)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
 
-    async def _execute(self, sql: str, params: list | None = None) -> int:
+    async def _execute(self, sql: str, *params) -> int:
         """执行单条写 SQL，返回 rowcount。"""
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(sql, params or [])
-                return cur.rowcount
-
-    async def _fetchall(self, sql: str, params: list | None = None) -> list[dict]:
-        """查询所有行。
-
-        autocommit=False 下，SELECT 也会隐式开启事务并建立一致性读快照。
-        若不 commit，连接归还连接池后快照仍残留，导致后续查询读不到其他事务已提交的变更。
-        因此查询结束后必须 commit 以结束读事务，释放快照。
-        """
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            try:
-                async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute(sql, params or [])
-                    return await cur.fetchall()
-            finally:
-                await conn.commit()
+            result = await conn.execute(sql, *params)
+        # asyncpg execute 返回 "INSERT 0 1" / "UPDATE 3" 等状态字符串
+        parts = result.split()
+        return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
-    async def _fetchone(self, sql: str, params: list | None = None) -> dict | None:
-        """查询单行。同 _fetchall，需在查询后 commit 释放读事务快照。"""
+    async def _fetchall(self, sql: str, *params) -> list[dict]:
+        """查询所有行。"""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            try:
-                async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute(sql, params or [])
-                    return await cur.fetchone()
-            finally:
-                await conn.commit()
+            rows = await conn.fetch(sql, *params)
+            return [dict(r) for r in rows]
+
+    async def _fetchone(self, sql: str, *params) -> dict | None:
+        """查询单行。"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+            return dict(row) if row else None
+
+    @staticmethod
+    def _ph(start: int, count: int) -> str:
+        """生成 PostgreSQL 编号占位符：$start, $(start+1), ..."""
+        return ",".join([f"${i}" for i in range(start, start + count)])
 
     async def ensure_schema(self) -> None:
+        """执行 DDL 建表（幂等，IF NOT EXISTS）。"""
         sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         stmts = self._split_sql(sql)
-        # 所有建表/改表均为 DDL，MySQL 会自动隐式提交，不应在显式事务中执行
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                for stmt in stmts:
-                    if stmt.strip():
-                        await cur.execute(stmt)
-                # 兼容旧表：添加 md5 列（列已存在则跳过，错误码 1060 = Duplicate column name）
-                try:
-                    await cur.execute(
-                        "ALTER TABLE aisag_sources ADD COLUMN md5 VARCHAR(32) NOT NULL DEFAULT ''")
-                    log.info("ensure_schema: 已添加 md5 列")
-                except Exception as e:
-                    if getattr(e, 'args', [None])[0] == 1060:
-                        log.info("ensure_schema: md5 列已存在，跳过")
-                    else:
-                        raise
-                # 兼容旧表：删除旧普通索引
-                try:
-                    await cur.execute(
-                        "ALTER TABLE aisag_sources DROP INDEX idx_aisag_source_name_md5")
-                    log.info("ensure_schema: 已删除旧索引 idx_aisag_source_name_md5")
-                except Exception:
-                    pass
-                # 兼容旧表：创建唯一索引（索引已存在则跳过，错误码 1061 = Duplicate key name）
-                try:
-                    await cur.execute(
-                        "ALTER TABLE aisag_sources ADD UNIQUE KEY uq_aisag_source_name_md5 (name(128), md5)")
-                    log.info("ensure_schema: 已创建唯一索引 uq_aisag_source_name_md5")
-                except Exception as e:
-                    code = getattr(e, 'args', [None])[0]
-                    if code == 1061:
-                        log.info("ensure_schema: 唯一索引已存在，跳过")
-                    elif code == 1062:
-                        log.warning(
-                            "ensure_schema: 表中存在重复的 (name, md5) 数据，无法创建唯一索引。"
-                            "请先手动清理重复行后重试。")
-                    else:
-                        raise
-                # 兼容旧表：为事件-实体关联表添加 created_at 列（列已存在则跳过，错误码 1060）
-                try:
-                    await cur.execute(
-                        "ALTER TABLE aisag_event_entities "
-                        "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
-                    log.info("ensure_schema: 已添加 aisag_event_entities.created_at 列")
-                except Exception as e:
-                    if getattr(e, 'args', [None])[0] == 1060:
-                        log.info("ensure_schema: aisag_event_entities.created_at 列已存在，跳过")
-                    else:
-                        raise
-                # 兼容旧表：添加 (entity_id, event_id) 覆盖索引（索引已存在则跳过，错误码 1061）
-                # 用于 get_event_ids_by_entity_ids 避免 idx_aisag_ee_entity 单列索引回表。
-                try:
-                    await cur.execute(
-                        "ALTER TABLE aisag_event_entities "
-                        "ADD INDEX idx_aisag_ee_entity_event (entity_id, event_id)")
-                    log.info("ensure_schema: 已添加覆盖索引 idx_aisag_ee_entity_event")
-                except Exception as e:
-                    if getattr(e, 'args', [None])[0] == 1061:
-                        log.info("ensure_schema: 覆盖索引 idx_aisag_ee_entity_event 已存在，跳过")
-                    else:
-                        raise
-                # 兼容旧表：删除冗余单列索引（被联合索引覆盖，删除提升写入性能）
-                # idx_aisag_ee_entity 被 idx_aisag_ee_entity_event (entity_id, event_id) 覆盖
-                # idx_aisag_ee_event 被 uq_aisag_ee (event_id, entity_id) 覆盖
-                for old_idx in ("idx_aisag_ee_entity", "idx_aisag_ee_event"):
-                    try:
-                        await cur.execute(
-                            f"ALTER TABLE aisag_event_entities DROP INDEX {old_idx}")
-                        log.info("ensure_schema: 已删除冗余索引 {}", old_idx)
-                    except Exception as e:
-                        if getattr(e, 'args', [None])[0] == 1091:  # Can't DROP INDEX
-                            log.info("ensure_schema: 索引 {} 不存在，跳过", old_idx)
-                        else:
-                            raise
+            for stmt in stmts:
+                if stmt.strip():
+                    await conn.execute(stmt)
 
     @staticmethod
     def _split_sql(sql: str) -> list[str]:
-        return [s.strip() for s in re.split(r";\s*\n", sql) if s.strip()]
+        """按分号分割 SQL 语句，但跳过 $$ ... $$ 函数体内的分号。"""
+        # 移除注释行
+        lines = []
+        for line in sql.split("\n"):
+            if not line.strip().startswith("--"):
+                lines.append(line)
+        text = "\n".join(lines)
+
+        result = []
+        in_dollar_quote = False
+        current: list[str] = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            # 追踪 $$ 定界符状态（函数体开始/结束）
+            if "$$" in stripped:
+                in_dollar_quote = not in_dollar_quote
+            current.append(line)
+            if stripped.endswith(";") and not in_dollar_quote:
+                result.append("\n".join(current))
+                current = []
+        if current:
+            result.append("\n".join(current))
+        return [s for s in result if s.strip()]
 
     async def ping(self) -> None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            await conn.ping(reconnect=True)
+            await conn.execute("SELECT 1")
 
     async def close(self) -> None:
         if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
+            await self._pool.close()
             self._pool = None
 
     async def mark_vector_synced(self, source_id: str, synced: bool) -> None:
         await self._execute(
-            "UPDATE aisag_sources SET vector_synced=%s WHERE id = %s",
-            (1 if synced else 0, source_id),
+            "UPDATE aisag_sources SET vector_synced=$1 WHERE id=$2",
+            (1 if synced else 0), source_id,
         )
 
     async def find_unsynced_sources(self) -> list[str]:
@@ -215,23 +157,18 @@ class MysqlStore:
         return [str(r["id"]) for r in rows]
 
     async def list_all_source_ids(self) -> list[str]:
-        """列出 MySQL 中所有 source_id（含已软删除事件的）。"""
         rows = await self._fetchall("SELECT id FROM aisag_sources")
         return [str(r["id"]) for r in rows]
 
     async def list_all_entity_ids(self) -> list[str]:
-        """列出 MySQL 中所有 entity_id（供对账比对孤儿实体向量）。"""
         rows = await self._fetchall("SELECT id FROM aisag_entities")
         return [str(r["id"]) for r in rows]
 
     async def check_duplicate(self, name: str, md5: str) -> str | None:
-        """检查是否存在同名且同 MD5 的未归档文档。
-
-        返回已存在的 source_id，若不存在则返回 None。
-        """
         r = await self._fetchone(
-            "SELECT id FROM aisag_sources WHERE name=%s AND md5=%s AND md5 != '' AND archived_at IS NULL",
-            (name, md5),
+            "SELECT id FROM aisag_sources "
+            "WHERE name=$1 AND md5=$2 AND md5 != '' AND archived_at IS NULL",
+            name, md5,
         )
         return str(r["id"]) if r else None
 
@@ -241,89 +178,93 @@ class MysqlStore:
                             md5: str = "") -> None:
         await self._execute(
             "INSERT INTO aisag_sources (id, name, description, md5, vector_synced) "
-            "VALUES (%s,%s,%s,%s,0) "
-            "AS new_src ON DUPLICATE KEY UPDATE name=new_src.name, description=new_src.description, "
-            "md5=new_src.md5, vector_synced=new_src.vector_synced",
-            (source_id, name, description, md5),
+            "VALUES ($1,$2,$3,$4,0) "
+            "ON CONFLICT (id) DO UPDATE SET "
+            "name=EXCLUDED.name, description=EXCLUDED.description, "
+            "md5=EXCLUDED.md5, vector_synced=EXCLUDED.vector_synced",
+            source_id, name, description, md5,
         )
 
     async def insert_document(self, doc_id: str, source_id: str, title: str,
                               content: str, status: str = "COMPLETED") -> None:
         await self._execute(
             "INSERT INTO aisag_documents (id, source_id, title, content, status) "
-            "VALUES (%s,%s,%s,%s,%s)",
-            (doc_id, source_id, title, content, status),
+            "VALUES ($1,$2,$3,$4,$5)",
+            doc_id, source_id, title, content, status,
         )
 
     async def insert_chunk(self, chunk: Chunk) -> None:
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
                     "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    (chunk.id, chunk.source_id, chunk.document_id, chunk.rank_index,
-                     chunk.heading, chunk.content),
+                    "VALUES ($1,$2,$3,$4,$5,$6)",
+                    chunk.id, chunk.source_id, chunk.document_id, chunk.rank_index,
+                    chunk.heading, chunk.content,
                 )
                 if self._faiss_map_enabled:
-                    await cur.execute(
+                    await conn.execute(
                         "INSERT INTO faiss_chunks_map (faiss_hash, uuid, source_id, document_id) "
-                        "VALUES (%s,%s,%s,%s) "
-                        "ON DUPLICATE KEY UPDATE source_id=VALUES(source_id), document_id=VALUES(document_id)",
-                        (uuid_to_int64(chunk.id), chunk.id, chunk.source_id, chunk.document_id),
+                        "VALUES ($1,$2,$3,$4) "
+                        "ON CONFLICT (faiss_hash) DO UPDATE SET "
+                        "uuid=EXCLUDED.uuid, source_id=EXCLUDED.source_id, document_id=EXCLUDED.document_id",
+                        uuid_to_int64(chunk.id), chunk.id, chunk.source_id, chunk.document_id,
                     )
 
     async def insert_event(self, event: Event) -> None:
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
                     "INSERT INTO aisag_events (id, source_id, document_id, chunk_id, rank_index, "
                     "title, summary, content) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (event.id, event.source_id, event.document_id, event.chunk_id, event.rank_index,
-                     event.title, event.summary, event.content),
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    event.id, event.source_id, event.document_id, event.chunk_id, event.rank_index,
+                    event.title, event.summary, event.content,
                 )
                 if self._faiss_map_enabled:
-                    await cur.execute(
+                    await conn.execute(
                         "INSERT INTO faiss_events_map (faiss_hash, uuid, source_id, document_id) "
-                        "VALUES (%s,%s,%s,%s) "
-                        "ON DUPLICATE KEY UPDATE source_id=VALUES(source_id), document_id=VALUES(document_id)",
-                        (uuid_to_int64(event.id), event.id, event.source_id, event.document_id),
+                        "VALUES ($1,$2,$3,$4) "
+                        "ON CONFLICT (faiss_hash) DO UPDATE SET "
+                        "uuid=EXCLUDED.uuid, source_id=EXCLUDED.source_id, document_id=EXCLUDED.document_id",
+                        uuid_to_int64(event.id), event.id, event.source_id, event.document_id,
                     )
 
     async def upsert_entity(self, entity: ExtractedEntity) -> str:
         eid = str(uuid.uuid4())
         norm = self._normalize(entity.name)
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
                     "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                    "VALUES (%s,%s,%s,%s,%s) "
-                    "AS new_ent ON DUPLICATE KEY UPDATE "
-                    "name=new_ent.name",
-                    (eid, entity.type, entity.name, norm, entity.description),
+                    "VALUES ($1,$2,$3,$4,$5) "
+                    "ON CONFLICT (entity_type, normalized_name) DO UPDATE SET "
+                    "name=EXCLUDED.name",
+                    eid, entity.type, entity.name, norm, entity.description,
                 )
-                await cur.execute(
-                    "SELECT id FROM aisag_entities WHERE entity_type=%s AND normalized_name=%s",
-                    (entity.type, norm),
+                row = await conn.fetchrow(
+                    "SELECT id FROM aisag_entities WHERE entity_type=$1 AND normalized_name=$2",
+                    entity.type, norm,
                 )
-                row = await cur.fetchone()
                 actual_id = str(row["id"]) if row else eid
                 if self._faiss_map_enabled:
-                    # 用真实 id 计算 hash 写入映射表（保证复用实体时映射表指向真实 UUID）
-                    await cur.execute(
+                    await conn.execute(
                         "INSERT INTO faiss_entities_map (faiss_hash, uuid) "
-                        "VALUES (%s,%s) "
-                        "ON DUPLICATE KEY UPDATE uuid=VALUES(uuid)",
-                        (uuid_to_int64(actual_id), actual_id),
+                        "VALUES ($1,$2) "
+                        "ON CONFLICT (faiss_hash) DO UPDATE SET uuid=EXCLUDED.uuid",
+                        uuid_to_int64(actual_id), actual_id,
                     )
                 return actual_id
 
     async def link_event_entity(self, event_id: str, entity_id: str,
                                 weight: float = 1.0, description: str = "") -> None:
         await self._execute(
-            "INSERT IGNORE INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
-            "VALUES (%s,%s,%s,%s,%s)",
-            (str(uuid.uuid4()), event_id, entity_id, weight, description),
+            "INSERT INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
+            "VALUES ($1,$2,$3,$4,$5) ON CONFLICT (event_id, entity_id) DO NOTHING",
+            str(uuid.uuid4()), event_id, entity_id, weight, description,
         )
 
     # ---------------- 批量事务写入 ----------------
@@ -332,7 +273,6 @@ class MysqlStore:
                              document_id: str, doc_title: str, doc_content: str,
                              chunks: list[Chunk], events: list, *,
                              md5: str = "") -> tuple[list, dict[tuple[str, str], str]]:
-        # 长度校验：chunks 和 events 必须严格 1:1（P0 修复）
         if len(chunks) != len(events):
             raise ValueError(
                 f"chunks 和 events 数量不一致：chunks={len(chunks)} events={len(events)}，"
@@ -340,40 +280,35 @@ class MysqlStore:
         event_records: list = []
         seen_entities: dict[tuple[str, str], str] = {}
 
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
                     "INSERT INTO aisag_sources (id, name, description, md5, vector_synced) "
-                    "VALUES (%s,%s,%s,%s,0)",
-                    (source_id, source_name, f"file_type={file_type}", md5),
+                    "VALUES ($1,$2,$3,$4,0) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "name=EXCLUDED.name, description=EXCLUDED.description, md5=EXCLUDED.md5",
+                    source_id, source_name, f"file_type={file_type}", md5,
                 )
-                await cur.execute(
+                await conn.execute(
                     "INSERT INTO aisag_documents (id, source_id, title, content, status) "
-                    "VALUES (%s,%s,%s,%s,%s)",
-                    (document_id, source_id, doc_title, doc_content, "COMPLETED"),
+                    "VALUES ($1,$2,$3,$4,$5)",
+                    document_id, source_id, doc_title, doc_content, "COMPLETED",
                 )
-                # 批量插入 chunks（P1 性能优化）+ 同事务写 FAISS 映射表
-                chunk_rows = [
-                    (c.id, c.source_id, c.document_id, c.rank_index,
-                     c.heading, c.content)
-                    for c in chunks
-                ]
-                await cur.executemany(
+                # 批量插入 chunks
+                await conn.executemany(
                     "INSERT INTO aisag_chunks (id, source_id, document_id, rank_index, heading, content) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    chunk_rows,
+                    "VALUES ($1,$2,$3,$4,$5,$6)",
+                    [(c.id, c.source_id, c.document_id, c.rank_index, c.heading, c.content)
+                     for c in chunks],
                 )
                 if self._faiss_map_enabled:
-                    # 映射表批量写入（与业务表同事务）
-                    chunk_map_rows = [
-                        (uuid_to_int64(c.id), c.id, c.source_id, c.document_id)
-                        for c in chunks
-                    ]
-                    await cur.executemany(
+                    await conn.executemany(
                         "INSERT INTO faiss_chunks_map (faiss_hash, uuid, source_id, document_id) "
-                        "VALUES (%s,%s,%s,%s) "
-                        "ON DUPLICATE KEY UPDATE source_id=VALUES(source_id), document_id=VALUES(document_id)",
-                        chunk_map_rows,
+                        "VALUES ($1,$2,$3,$4) "
+                        "ON CONFLICT (faiss_hash) DO UPDATE SET "
+                        "uuid=EXCLUDED.uuid, source_id=EXCLUDED.source_id, document_id=EXCLUDED.document_id",
+                        [(uuid_to_int64(c.id), c.id, c.source_id, c.document_id) for c in chunks],
                     )
                 # 构造 event 记录并批量插入
                 for idx, (chunk, ev) in enumerate(zip(chunks, events)):
@@ -382,31 +317,22 @@ class MysqlStore:
                         chunk_id=chunk.id, rank_index=idx,
                     )
                     event_records.append(event)
-                event_rows = [
-                    (e.id, e.source_id, e.document_id, e.chunk_id, e.rank_index,
-                     e.title, e.summary, e.content)
-                    for e in event_records
-                ]
-                await cur.executemany(
+                await conn.executemany(
                     "INSERT INTO aisag_events (id, source_id, document_id, chunk_id, rank_index, "
                     "title, summary, content) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                    event_rows,
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    [(e.id, e.source_id, e.document_id, e.chunk_id, e.rank_index,
+                      e.title, e.summary, e.content) for e in event_records],
                 )
                 if self._faiss_map_enabled:
-                    event_map_rows = [
-                        (uuid_to_int64(e.id), e.id, e.source_id, e.document_id)
-                        for e in event_records
-                    ]
-                    await cur.executemany(
+                    await conn.executemany(
                         "INSERT INTO faiss_events_map (faiss_hash, uuid, source_id, document_id) "
-                        "VALUES (%s,%s,%s,%s) "
-                        "ON DUPLICATE KEY UPDATE source_id=VALUES(source_id), document_id=VALUES(document_id)",
-                        event_map_rows,
+                        "VALUES ($1,$2,$3,$4) "
+                        "ON CONFLICT (faiss_hash) DO UPDATE SET "
+                        "uuid=EXCLUDED.uuid, source_id=EXCLUDED.source_id, document_id=EXCLUDED.document_id",
+                        [(uuid_to_int64(e.id), e.id, e.source_id, e.document_id) for e in event_records],
                     )
 
-                # 实体去重 + 关联写入（需逐条查询去重，无法批量）
-                # 实体复用时映射表写入使用真实 id 计算 hash（保证映射表指向真实 UUID）
                 new_entity_count = 0
                 reused_entity_count = 0
                 for idx, (chunk, ev) in enumerate(zip(chunks, events)):
@@ -418,18 +344,17 @@ class MysqlStore:
                             eid = seen_entities[key]
                         else:
                             new_eid = str(uuid.uuid4())
-                            await cur.execute(
+                            await conn.execute(
                                 "INSERT INTO aisag_entities (id, entity_type, name, normalized_name, description) "
-                                "VALUES (%s,%s,%s,%s,%s) "
-                                "AS new_ent ON DUPLICATE KEY UPDATE "
-                                "name=new_ent.name",
-                                (new_eid, e.type, e.name, norm, e.description),
+                                "VALUES ($1,$2,$3,$4,$5) "
+                                "ON CONFLICT (entity_type, normalized_name) DO UPDATE SET "
+                                "name=EXCLUDED.name",
+                                new_eid, e.type, e.name, norm, e.description,
                             )
-                            await cur.execute(
-                                "SELECT id FROM aisag_entities WHERE entity_type=%s AND normalized_name=%s",
-                                (e.type, norm),
+                            row = await conn.fetchrow(
+                                "SELECT id FROM aisag_entities WHERE entity_type=$1 AND normalized_name=$2",
+                                e.type, norm,
                             )
-                            row = await cur.fetchone()
                             actual_id = str(row["id"]) if row else new_eid
                             if actual_id == new_eid:
                                 new_entity_count += 1
@@ -438,17 +363,16 @@ class MysqlStore:
                             eid = actual_id
                             seen_entities[key] = eid
                             if self._faiss_map_enabled:
-                                # 用真实 id 写映射表（ON DUPLICATE KEY 保证幂等）
-                                await cur.execute(
+                                await conn.execute(
                                     "INSERT INTO faiss_entities_map (faiss_hash, uuid) "
-                                    "VALUES (%s,%s) "
-                                    "ON DUPLICATE KEY UPDATE uuid=VALUES(uuid)",
-                                    (uuid_to_int64(eid), eid),
+                                    "VALUES ($1,$2) "
+                                    "ON CONFLICT (faiss_hash) DO UPDATE SET uuid=EXCLUDED.uuid",
+                                    uuid_to_int64(eid), eid,
                                 )
-                        await cur.execute(
-                            "INSERT IGNORE INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
-                            "VALUES (%s,%s,%s,%s,%s)",
-                            (str(uuid.uuid4()), event.id, eid, e.weight, e.role),
+                        await conn.execute(
+                            "INSERT INTO aisag_event_entities (id, event_id, entity_id, weight, description) "
+                            "VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+                            str(uuid.uuid4()), event.id, eid, e.weight, e.role,
                         )
                 log.info("实体去重统计 新实体={} 复用已有={} 总引用={}",
                          new_entity_count, reused_entity_count,
@@ -462,13 +386,14 @@ class MysqlStore:
                                           exclude: list[str] | None = None) -> list[str]:
         if not entity_ids:
             return []
-        ph_e = ",".join(["%s"] * len(entity_ids))
         params: list = list(entity_ids)
+        n = 1
+        ph_e = self._ph(n, len(entity_ids))
+        n += len(entity_ids)
+
         if source_ids:
-            # JOIN 替代 EXISTS：让 MySQL 优化器一次性规划，避免每行 ee 触发子查询。
-            # ee.entity_id IN 走 idx_aisag_ee_entity，ev.source_id IN 走 idx_aisag_event_source，
-            # JOIN 走 ev.id 主键，DISTINCT 走 uq_aisag_ee(event_id, entity_id)。
-            ph_s = ",".join(["%s"] * len(source_ids))
+            ph_s = self._ph(n, len(source_ids))
+            n += len(source_ids)
             params.extend(source_ids)
             sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
                    f"INNER JOIN aisag_events ev ON ev.id = ee.event_id "
@@ -476,11 +401,9 @@ class MysqlStore:
         else:
             sql = (f"SELECT DISTINCT ee.event_id FROM aisag_event_entities ee "
                    f"WHERE ee.entity_id IN ({ph_e})")
-        rows = await self._fetchall(sql, params)
+        rows = await self._fetchall(sql, *params)
         event_ids = [r["event_id"] for r in rows]
         if exclude:
-            # Python 端过滤 tracked_events（不进 SQL，避免 NOT IN 长度膨胀）。
-            # exclude 直接迭代，无需 list() 拷贝。
             exclude_set = set(exclude) if not isinstance(exclude, set) else exclude
             event_ids = [eid for eid in event_ids if eid not in exclude_set]
         return event_ids
@@ -488,41 +411,40 @@ class MysqlStore:
     async def search_entities_by_name(self, names: list[str], source_ids: list[str] | None) -> list[Entity]:
         if not names:
             return []
-        # 入库时实体名经 _normalize 处理（去空格+小写），查询前需一致化
         normalized = [self._normalize(n) for n in names]
-        ph = ",".join(["%s"] * len(normalized))
+        params: list = list(normalized)
+        n = 1
+        ph_n = self._ph(n, len(normalized))
+        n += len(normalized)
+
         if source_ids:
-            ph_s = ",".join(["%s"] * len(source_ids))
-            params = list(normalized) + list(source_ids)
+            ph_s = self._ph(n, len(source_ids))
+            params.extend(source_ids)
             sql = (f"SELECT en.id, en.entity_type, en.name, en.normalized_name, en.description "
                    f"FROM aisag_entities en "
-                   f"WHERE en.normalized_name IN ({ph}) "
+                   f"WHERE en.normalized_name IN ({ph_n}) "
                    f"AND EXISTS ("
                    f"SELECT 1 FROM aisag_event_entities ee "
                    f"JOIN aisag_events ev ON ev.id = ee.event_id "
                    f"WHERE ee.entity_id = en.id AND ev.source_id IN ({ph_s})"
                    f")")
-            rows = await self._fetchall(sql, params)
-            return [self._row_to_entity(r) for r in rows]
         else:
             sql = (f"SELECT id, entity_type, name, normalized_name, description "
                    f"FROM aisag_entities en "
-                   f"WHERE en.normalized_name IN ({ph}) "
+                   f"WHERE en.normalized_name IN ({ph_n}) "
                    f"AND EXISTS (SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = en.id)")
-            rows = await self._fetchall(sql, list(normalized))
-            return [self._row_to_entity(r) for r in rows]
+        rows = await self._fetchall(sql, *params)
+        return [self._row_to_entity(r) for r in rows]
 
     async def get_entity_degrees(self, entity_ids: list[str]) -> dict[str, int]:
-        """批量查实体被多少事件引用（度数），用于 BFS 边界实体的 IDF 评分。
-        度数高 = 高频枢纽实体（如"众邦银行"），扩展价值低。"""
         if not entity_ids:
             return {}
-        ph = ",".join(["%s"] * len(entity_ids))
+        ph = self._ph(1, len(entity_ids))
         sql = (f"SELECT entity_id, COUNT(*) AS degree "
                f"FROM aisag_event_entities "
                f"WHERE entity_id IN ({ph}) "
                f"GROUP BY entity_id")
-        rows = await self._fetchall(sql, list(entity_ids))
+        rows = await self._fetchall(sql, *entity_ids)
         return {r["entity_id"]: int(r["degree"]) for r in rows}
 
     async def filter_entity_ids_by_sources(self, entity_ids: list[str],
@@ -531,30 +453,35 @@ class MysqlStore:
             return []
         if not source_ids:
             return list(entity_ids)
-        ph = ",".join(["%s"] * len(entity_ids))
-        ph_s = ",".join(["%s"] * len(source_ids))
-        params = list(entity_ids) + list(source_ids)
+        params: list = list(entity_ids)
+        n = 1
+        ph_e = self._ph(n, len(entity_ids))
+        n += len(entity_ids)
+        ph_s = self._ph(n, len(source_ids))
+        params.extend(source_ids)
         sql = (f"SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
-               f"WHERE ee.entity_id IN ({ph}) "
+               f"WHERE ee.entity_id IN ({ph_e}) "
                f"AND EXISTS (SELECT 1 FROM aisag_events e "
                f"            WHERE e.id = ee.event_id AND e.source_id IN ({ph_s}))")
-        rows = await self._fetchall(sql, params)
+        rows = await self._fetchall(sql, *params)
         return [r["entity_id"] for r in rows]
 
     async def get_events_by_ids(self, event_ids: list[str],
                                 source_ids: list[str] | None = None) -> list[Event]:
         if not event_ids:
             return []
-        ph = ",".join(["%s"] * len(event_ids))
-        where = [f"id IN ({ph})"]
         params: list = list(event_ids)
+        n = 1
+        ph = self._ph(n, len(event_ids))
+        n += len(event_ids)
+        where = [f"id IN ({ph})"]
         if source_ids:
-            ph_s = ",".join(["%s"] * len(source_ids))
-            where.append(f"source_id IN ({ph_s})")
+            ph_s = self._ph(n, len(source_ids))
             params.extend(source_ids)
+            where.append(f"source_id IN ({ph_s})")
         sql = (f"SELECT id, source_id, document_id, chunk_id, rank_index, title, summary, content "
                f"FROM aisag_events WHERE " + " AND ".join(where))
-        rows = await self._fetchall(sql, params)
+        rows = await self._fetchall(sql, *params)
         row_map = {r["id"]: r for r in rows}
         ordered = [row_map[eid] for eid in event_ids if eid in row_map]
         matched_ids = [r["id"] for r in ordered]
@@ -572,11 +499,11 @@ class MysqlStore:
     async def _entity_roles_of_events(self, event_ids: list[str]) -> dict[str, dict[str, tuple[str, float]]]:
         if not event_ids:
             return {}
-        ph = ",".join(["%s"] * len(event_ids))
+        ph = self._ph(1, len(event_ids))
         rows = await self._fetchall(
             f"SELECT event_id, entity_id, description, weight "
             f"FROM aisag_event_entities WHERE event_id IN ({ph})",
-            list(event_ids),
+            *event_ids,
         )
         result: dict[str, dict[str, tuple[str, float]]] = {}
         for r in rows:
@@ -591,158 +518,143 @@ class MysqlStore:
     async def get_entity_names_by_ids(self, entity_ids: list[str]) -> dict[str, str]:
         if not entity_ids:
             return {}
-        ph = ",".join(["%s"] * len(entity_ids))
+        ph = self._ph(1, len(entity_ids))
         rows = await self._fetchall(
             f"SELECT id, name FROM aisag_entities WHERE id IN ({ph})",
-            list(entity_ids),
+            *entity_ids,
         )
         return {str(r["id"]): str(r["name"]) for r in rows}
 
     async def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[Chunk]:
         if not chunk_ids:
             return []
-        ph = ",".join(["%s"] * len(chunk_ids))
+        ph = self._ph(1, len(chunk_ids))
         sql = (f"SELECT id, source_id, document_id, rank_index, heading, content "
                f"FROM aisag_chunks WHERE id IN ({ph})")
-        rows = await self._fetchall(sql, list(chunk_ids))
+        rows = await self._fetchall(sql, *chunk_ids)
         row_map = {r["id"]: r for r in rows}
         return [self._row_to_chunk(row_map[cid]) for cid in chunk_ids if cid in row_map]
 
     async def get_chunk_ids_by_event_ids(self, event_ids: list[str]) -> dict[str, str]:
         if not event_ids:
             return {}
-        ph = ",".join(["%s"] * len(event_ids))
+        ph = self._ph(1, len(event_ids))
         sql = f"SELECT id, chunk_id FROM aisag_events WHERE id IN ({ph})"
-        rows = await self._fetchall(sql, list(event_ids))
+        rows = await self._fetchall(sql, *event_ids)
         return {r["id"]: r["chunk_id"] for r in rows}
 
     async def delete_by_source(self, source_id: str) -> tuple[int, list[str]]:
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
                     "SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
                     "JOIN aisag_events e ON e.id = ee.event_id "
-                    "WHERE e.source_id=%s",
-                    (source_id,),
+                    "WHERE e.source_id=$1",
+                    source_id,
                 )
-                affected = await cur.fetchall()
-                affected_entity_ids = [str(r["entity_id"]) for r in affected]
+                affected_entity_ids = [str(r["entity_id"]) for r in rows]
 
-                await cur.execute(
+                await conn.execute(
                     "DELETE FROM aisag_event_entities WHERE event_id IN "
-                    "(SELECT id FROM aisag_events WHERE source_id=%s)",
-                    (source_id,),
+                    "(SELECT id FROM aisag_events WHERE source_id=$1)",
+                    source_id,
                 )
-                await cur.execute(
-                    "DELETE FROM aisag_events WHERE source_id=%s",
-                    (source_id,),
+                result = await conn.execute(
+                    "DELETE FROM aisag_events WHERE source_id=$1",
+                    source_id,
                 )
-                n = cur.rowcount
-                await cur.execute("DELETE FROM aisag_chunks WHERE source_id=%s", (source_id,))
-                await cur.execute("DELETE FROM aisag_documents WHERE source_id=%s", (source_id,))
-                await cur.execute("DELETE FROM aisag_sources WHERE id=%s", (source_id,))
+                n = int(result.split()[-1]) if result else 0
+                await conn.execute("DELETE FROM aisag_chunks WHERE source_id=$1", source_id)
+                await conn.execute("DELETE FROM aisag_documents WHERE source_id=$1", source_id)
+                await conn.execute("DELETE FROM aisag_sources WHERE id=$1", source_id)
                 if self._faiss_map_enabled:
-                    # 同步删 FAISS 映射表（按 source_id 直接删，事务保证一致）
-                    await cur.execute("DELETE FROM faiss_chunks_map WHERE source_id=%s", (source_id,))
-                    await cur.execute("DELETE FROM faiss_events_map WHERE source_id=%s", (source_id,))
+                    await conn.execute("DELETE FROM faiss_chunks_map WHERE source_id=$1", source_id)
+                    await conn.execute("DELETE FROM faiss_events_map WHERE source_id=$1", source_id)
 
                 orphan_ids: list[str] = []
                 if affected_entity_ids:
-                    placeholders = ",".join(["%s"] * len(affected_entity_ids))
-                    await cur.execute(
+                    ph_aff = self._ph(1, len(affected_entity_ids))
+                    orphan_rows = await conn.fetch(
                         f"SELECT e.id, e.entity_type, e.name FROM aisag_entities e "
-                        f"WHERE e.id IN ({placeholders}) "
+                        f"WHERE e.id IN ({ph_aff}) "
                         f"AND NOT EXISTS ("
                         f"  SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = e.id"
                         f")",
-                        affected_entity_ids,
+                        *affected_entity_ids,
                     )
-                    orphans = await cur.fetchall()
-                    orphan_ids = [str(r["id"]) for r in orphans]
-                    if orphans:
-                        ph = ",".join(["%s"] * len(orphan_ids))
-                        await cur.execute(f"DELETE FROM aisag_entities WHERE id IN ({ph})", orphan_ids)
+                    orphan_ids = [str(r["id"]) for r in orphan_rows]
+                    if orphan_ids:
+                        ph_o = self._ph(1, len(orphan_ids))
+                        await conn.execute(
+                            f"DELETE FROM aisag_entities WHERE id IN ({ph_o})",
+                            *orphan_ids,
+                        )
                         if self._faiss_map_enabled:
-                            # 同步删实体映射表（用 UUID 计算 hash 反查不方便，直接 JOIN 删）
-                            await cur.execute(
-                                f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph})",
-                                orphan_ids,
+                            await conn.execute(
+                                f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph_o})",
+                                *orphan_ids,
                             )
 
                 return n, orphan_ids
 
     async def hard_delete_soft_deleted_events(self) -> tuple[list[str], list[str]]:
-        """硬删除所有 deleted_at IS NOT NULL 的软删除事件。
-
-        删除链路：event_entities → events → 检测孤儿 entities → 删除孤儿 entities。
-        返回 (deleted_event_ids, orphan_entity_ids)，供上层清理向量库。
-        """
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                # 1. 查所有软删除的事件
-                await cur.execute(
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
                     "SELECT id FROM aisag_events WHERE deleted_at IS NOT NULL"
                 )
-                rows = await cur.fetchall()
                 event_ids = [str(r["id"]) for r in rows]
                 if not event_ids:
                     return [], []
 
                 log.info("硬删除扫描：发现 {} 条软删除事件，开始物理清理", len(event_ids))
 
-                # 2. 查受影响 entity_id（用于后续孤儿检测）
-                ph_ev = ",".join(["%s"] * len(event_ids))
-                await cur.execute(
+                ph_ev = self._ph(1, len(event_ids))
+                affected = await conn.fetch(
                     f"SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
                     f"WHERE ee.event_id IN ({ph_ev})",
-                    event_ids,
+                    *event_ids,
                 )
-                affected = await cur.fetchall()
                 affected_entity_ids = [str(r["entity_id"]) for r in affected]
 
-                # 3. 删除 event_entities 关联
-                await cur.execute(
+                await conn.execute(
                     f"DELETE FROM aisag_event_entities WHERE event_id IN ({ph_ev})",
-                    event_ids,
+                    *event_ids,
                 )
-
-                # 4. 硬删除 events
-                await cur.execute(
+                result = await conn.execute(
                     f"DELETE FROM aisag_events WHERE id IN ({ph_ev})",
-                    event_ids,
+                    *event_ids,
                 )
-                n = cur.rowcount
+                n = int(result.split()[-1]) if result else 0
                 if self._faiss_map_enabled:
-                    # 同步删 events 映射表
-                    await cur.execute(
+                    await conn.execute(
                         f"DELETE FROM faiss_events_map WHERE uuid IN ({ph_ev})",
-                        event_ids,
+                        *event_ids,
                     )
 
-                # 5. 检测孤儿 entities（无任何 event_entities 引用的）
                 orphan_ids: list[str] = []
                 if affected_entity_ids:
-                    ph_aff = ",".join(["%s"] * len(affected_entity_ids))
-                    await cur.execute(
+                    ph_aff = self._ph(1, len(affected_entity_ids))
+                    orphans = await conn.fetch(
                         f"SELECT e.id FROM aisag_entities e WHERE e.id IN ({ph_aff}) "
                         f"AND NOT EXISTS ("
                         f"  SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = e.id"
                         f")",
-                        affected_entity_ids,
+                        *affected_entity_ids,
                     )
-                    orphans = await cur.fetchall()
                     orphan_ids = [str(r["id"]) for r in orphans]
                     if orphans:
-                        ph_o = ",".join(["%s"] * len(orphan_ids))
-                        await cur.execute(
+                        ph_o = self._ph(1, len(orphan_ids))
+                        await conn.execute(
                             f"DELETE FROM aisag_entities WHERE id IN ({ph_o})",
-                            orphan_ids,
+                            *orphan_ids,
                         )
                         if self._faiss_map_enabled:
-                            # 同步删实体映射表
-                            await cur.execute(
+                            await conn.execute(
                                 f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph_o})",
-                                orphan_ids,
+                                *orphan_ids,
                             )
 
                 log.info("硬删除完成 events={} 孤儿entities={}", n, len(orphan_ids))
@@ -754,38 +666,40 @@ class MysqlStore:
                            limit: int = 100, offset: int = 0) -> list[dict]:
         where = [] if include_archived else ["archived_at IS NULL"]
         params: list = []
+        param_idx = 1
         if keyword:
-            where.append("name LIKE %s")
             params.append(f"%{keyword}%")
+            where.append(f"name LIKE ${param_idx}")
+            param_idx += 1
         where_clause = (" WHERE " + " AND ".join(where)) if where else ""
-        sql = (f"SELECT id, name, description, md5, created_at, updated_at, archived_at "
-               f"FROM aisag_sources{where_clause} ORDER BY created_at DESC LIMIT %s OFFSET %s")
         params.extend([limit, offset])
-        rows = await self._fetchall(sql, params)
+        sql = (f"SELECT id, name, description, md5, created_at, updated_at, archived_at "
+               f"FROM aisag_sources{where_clause} ORDER BY created_at DESC "
+               f"LIMIT ${param_idx} OFFSET ${param_idx + 1}")
+        rows = await self._fetchall(sql, *params)
         return [self._row_to_source(r) for r in rows]
 
     async def get_source(self, source_id: str) -> dict | None:
         r = await self._fetchone(
             "SELECT id, name, description, md5, created_at, updated_at, archived_at "
-            "FROM aisag_sources WHERE id=%s", (source_id,))
+            "FROM aisag_sources WHERE id=$1", source_id)
         return self._row_to_source(r) if r else None
 
     async def get_source_names_by_ids(self, source_ids: list[str]) -> dict[str, str]:
-        """批量查 source_id → name 映射，供 API 返回溯源信息。"""
         if not source_ids:
             return {}
-        ph = ",".join(["%s"] * len(source_ids))
+        ph = self._ph(1, len(source_ids))
         rows = await self._fetchall(
             f"SELECT id, name FROM aisag_sources WHERE id IN ({ph})",
-            list(source_ids),
+            *source_ids,
         )
         return {str(r["id"]): str(r["name"]) for r in rows}
 
     async def get_document_by_source(self, source_id: str) -> dict | None:
         r = await self._fetchone(
             "SELECT id, source_id, title, content, status, created_at "
-            "FROM aisag_documents WHERE source_id=%s ORDER BY created_at DESC LIMIT 1",
-            (source_id,))
+            "FROM aisag_documents WHERE source_id=$1 ORDER BY created_at DESC LIMIT 1",
+            source_id)
         if not r:
             return None
         return {
@@ -802,27 +716,30 @@ class MysqlStore:
     async def update_source(self, source_id: str, *, name: str | None = None,
                             description: str | None = None) -> bool:
         sets, params = [], []
+        idx = 1
         if name is not None:
-            sets.append("name=%s")
             params.append(name)
+            sets.append(f"name=${idx}")
+            idx += 1
         if description is not None:
-            sets.append("description=%s")
             params.append(description)
+            sets.append(f"description=${idx}")
+            idx += 1
         if not sets:
             return False
         params.append(source_id)
         return await self._execute(
-            f"UPDATE aisag_sources SET {', '.join(sets)} WHERE id=%s", params) > 0
+            f"UPDATE aisag_sources SET {', '.join(sets)} WHERE id=${idx}", *params) > 0
 
     async def count_chunks_by_source(self, source_id: str) -> int:
         r = await self._fetchone(
-            "SELECT COUNT(*) AS c FROM aisag_chunks WHERE source_id=%s", (source_id,))
+            "SELECT COUNT(*) AS c FROM aisag_chunks WHERE source_id=$1", source_id)
         return int(r["c"]) if r else 0
 
     async def count_events_by_source(self, source_id: str) -> int:
         r = await self._fetchone(
-            "SELECT COUNT(*) AS c FROM aisag_events WHERE source_id=%s",
-            (source_id,))
+            "SELECT COUNT(*) AS c FROM aisag_events WHERE source_id=$1",
+            source_id)
         return int(r["c"]) if r else 0
 
     @staticmethod
@@ -841,20 +758,22 @@ class MysqlStore:
         if not kw:
             return []
         like = f"%{kw}%"
+        params: list = [like]
         sql = (
             "SELECT d.source_id, d.title, d.content, s.name AS source_name, d.created_at "
             "FROM aisag_documents d "
             "JOIN aisag_sources s ON s.id = d.source_id "
-            "WHERE d.content LIKE %s AND s.archived_at IS NULL"
+            "WHERE d.content LIKE $1 AND s.archived_at IS NULL"
         )
-        params: list = [like]
+        idx = 2
         if source_ids:
-            ph = ",".join(["%s"] * len(source_ids))
-            sql += f" AND d.source_id IN ({ph})"
+            ph = self._ph(idx, len(source_ids))
             params.extend(source_ids)
-        sql += " ORDER BY d.created_at DESC LIMIT %s"
+            sql += f" AND d.source_id IN ({ph})"
+            idx += len(source_ids)
+        sql += f" ORDER BY d.created_at DESC LIMIT ${idx}"
         params.append(limit)
-        rows = await self._fetchall(sql, params)
+        rows = await self._fetchall(sql, *params)
         results: list[dict] = []
         for r in rows:
             content = r.get("content") or ""
@@ -906,100 +825,80 @@ class MysqlStore:
         )
 
     # ---------------- FAISS hash 反查（仅 FAISS 后端使用）----------------
-    # 设计：hash → UUID/source_id 的映射存于独立的 faiss_*_map 表（与业务表解耦），
-    #       业务字段需 JOIN 业务表获取。
 
     async def fetch_chunks_by_hashes(self, hashes: list[int]) -> list[dict]:
-        """按 faiss_hash 批量查 chunks（FAISS 后端检索后回查业务字段）。
-
-        返回 list[dict]，每项含 id/source_id/document_id/content/faiss_hash。
-        """
         if not hashes:
             return []
-        ph = ",".join(["%s"] * len(hashes))
+        ph = self._ph(1, len(hashes))
         sql = (
             f"SELECT c.id, c.source_id, c.document_id, c.content, m.faiss_hash "
             f"FROM faiss_chunks_map m JOIN aisag_chunks c ON c.id = m.uuid "
             f"WHERE m.faiss_hash IN ({ph})"
         )
-        return await self._fetchall(sql, list(hashes))
+        return await self._fetchall(sql, *hashes)
 
     async def fetch_events_by_hashes(self, hashes: list[int]) -> list[dict]:
-        """按 faiss_hash 批量查 events（FAISS 检索 event_titles/contents/summaries 后回查）。
-
-        返回 list[dict]，每项含 id/source_id/document_id/title/summary/content/faiss_hash。
-        软删事件（deleted_at IS NOT NULL）会被自动过滤。
-        """
         if not hashes:
             return []
-        ph = ",".join(["%s"] * len(hashes))
+        ph = self._ph(1, len(hashes))
         sql = (
             f"SELECT e.id, e.source_id, e.document_id, e.title, e.summary, e.content, m.faiss_hash "
             f"FROM faiss_events_map m JOIN aisag_events e ON e.id = m.uuid "
             f"WHERE m.faiss_hash IN ({ph}) AND e.deleted_at IS NULL"
         )
-        return await self._fetchall(sql, list(hashes))
+        return await self._fetchall(sql, *hashes)
 
     async def fetch_entities_by_hashes(self, hashes: list[int]) -> list[dict]:
-        """按 faiss_hash 批量查 entities（FAISS 检索 entities collection 后回查）。
-
-        返回 list[dict]，每项含 id/entity_type/name/normalized_name/description/faiss_hash。
-        """
         if not hashes:
             return []
-        ph = ",".join(["%s"] * len(hashes))
+        ph = self._ph(1, len(hashes))
         sql = (
             f"SELECT e.id, e.entity_type, e.name, e.normalized_name, e.description, m.faiss_hash "
             f"FROM faiss_entities_map m JOIN aisag_entities e ON e.id = m.uuid "
             f"WHERE m.faiss_hash IN ({ph})"
         )
-        return await self._fetchall(sql, list(hashes))
+        return await self._fetchall(sql, *hashes)
 
     async def fetch_source_ids_by_hashes(self, table: str, hashes: list[int]) -> dict[int, str]:
-        """通用：按 faiss_hash 批量回查 source_id，返回 {hash: source_id} 映射。
-
-        用于 FAISS 后端在 source_id 过滤场景下做后过滤。
-        table 取值：'aisag_chunks' / 'aisag_events'（entities 表无 source_id，不支持）。
-        """
         if not hashes:
             return {}
-        ph = ",".join(["%s"] * len(hashes))
+        ph = self._ph(1, len(hashes))
         if table == "aisag_chunks":
             sql = f"SELECT faiss_hash, source_id FROM faiss_chunks_map WHERE faiss_hash IN ({ph})"
         elif table == "aisag_events":
             sql = f"SELECT faiss_hash, source_id FROM faiss_events_map WHERE faiss_hash IN ({ph})"
         else:
             raise ValueError(f"fetch_source_ids_by_hashes 不支持表 {table}（entities 无 source_id）")
-        rows = await self._fetchall(sql, list(hashes))
+        rows = await self._fetchall(sql, *hashes)
         return {int(r["faiss_hash"]): str(r["source_id"]) for r in rows}
 
     async def fetch_hashes_by_source(self, map_table: str, source_id: str) -> list[int]:
         """按 source_id 从 FAISS 映射表查 faiss_hash 列表（FAISS 后端专用）。"""
         rows = await self._fetchall(
-            f"SELECT faiss_hash FROM {map_table} WHERE source_id=%s", [source_id])
+            f"SELECT faiss_hash FROM {map_table} WHERE source_id=$1", source_id)
         return [int(r["faiss_hash"]) for r in rows]
 
     async def fetch_hashes_by_source_document(self, map_table: str, source_id: str,
                                               document_id: str) -> list[int]:
         """按 (source_id, document_id) 从 FAISS 映射表查 faiss_hash 列表（FAISS 后端专用）。"""
         rows = await self._fetchall(
-            f"SELECT faiss_hash FROM {map_table} WHERE source_id=%s AND document_id=%s",
-            [source_id, document_id])
+            f"SELECT faiss_hash FROM {map_table} WHERE source_id=$1 AND document_id=$2",
+            source_id, document_id)
         return [int(r["faiss_hash"]) for r in rows]
 
     async def fetch_all_hashes(self, map_table: str) -> list[int]:
         """查 FAISS 映射表全部 faiss_hash（一致性对账用，FAISS 后端专用）。"""
-        rows = await self._fetchall(f"SELECT faiss_hash FROM {map_table}", [])
+        rows = await self._fetchall(f"SELECT faiss_hash FROM {map_table}")
         return [int(r["faiss_hash"]) for r in rows]
 
     async def fetch_distinct_source_ids(self) -> list[str]:
         """查 aisag_chunks 表所有去重 source_id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT DISTINCT source_id FROM aisag_chunks", [])
+        rows = await self._fetchall("SELECT DISTINCT source_id FROM aisag_chunks")
         return [str(r["source_id"]) for r in rows]
 
     async def fetch_all_entity_ids(self) -> list[str]:
         """查 aisag_entities 表所有 id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT id FROM aisag_entities", [])
+        rows = await self._fetchall("SELECT id FROM aisag_entities")
         return [str(r["id"]) for r in rows]
 
     def to_event_record(self, event: ExtractedEvent, *, source_id: str, document_id: str,

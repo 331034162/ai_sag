@@ -3,8 +3,8 @@
 faiss / milvus / pgvector 后端依赖（faiss-cpu / pymilvus / pgvector / asyncpg / sqlalchemy）
 按需导入，未安装时给出明确安装提示，不影响仅使用 chroma 后端的用户。
 
-FAISS 后端依赖 MySQL 反查（faiss_hash → UUID，映射存于独立 faiss_*_map 表），
-需通过 mysql_store 参数传入 MysqlStore。
+FAISS 后端依赖 DB 反查（faiss_hash → UUID，映射存于独立 faiss_*_map 表），
+需通过 db_store 参数传入 MysqlStore / PgStore。
 """
 from __future__ import annotations
 
@@ -16,15 +16,16 @@ from .chroma_store import ChromaVectorStoreBackend
 
 if TYPE_CHECKING:
     from ..storage.mysql_store import MysqlStore
+    from ..storage.pg_store import PgStore
 
 
-def create_vector_store(cfg: Config, mysql_store: "MysqlStore | None" = None) -> BaseVectorStore:
+def create_vector_store(cfg: Config, db_store: "MysqlStore | PgStore | None" = None) -> BaseVectorStore:
     """创建向量库后端实例。
 
     Args:
         cfg: 全局配置
-        mysql_store: FAISS 后端必需（用于通过 faiss_*_map 映射表反查 faiss_hash → UUID）；
-                    其他后端（chroma/milvus/pgvector）可不传。
+        db_store: FAISS 后端必需（用于通过 faiss_*_map 映射表反查 faiss_hash → UUID）；
+                 其他后端（chroma/milvus/pgvector）可不传。
     """
     backend = cfg.vector_store.backend.lower()
     if backend in ("chroma", "chromadb"):
@@ -37,11 +38,11 @@ def create_vector_store(cfg: Config, mysql_store: "MysqlStore | None" = None) ->
                 f"使用 faiss 后端需先安装依赖：pip install faiss-cpu "
                 f"llama-index-vector-stores-faiss（原错误：{e}）"
             ) from e
-        if mysql_store is None:
+        if db_store is None:
             raise ValueError(
-                "FAISS 后端必须传入 mysql_store（用于通过 faiss_*_map 映射表反查 faiss_hash → UUID），"
-                "请调用 create_vector_store(cfg, mysql_store=db)")
-        return FaissVectorStoreBackend(cfg, mysql_store=mysql_store)
+                "FAISS 后端必须传入 db_store（用于通过 faiss_*_map 映射表反查 faiss_hash → UUID），"
+                "请调用 create_vector_store(cfg, db_store=db)")
+        return FaissVectorStoreBackend(cfg, db_store=db_store)
     if backend in ("milvus",):
         try:
             from .milvus_store import MilvusVectorStoreBackend

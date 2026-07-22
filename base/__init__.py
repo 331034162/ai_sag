@@ -10,6 +10,7 @@ from .config import (
     Config,
     EmbeddingConfig,
     MysqlConfig,
+    PgConfig,
     SearchConfig,
     SplitterConfig,
     VectorStoreConfig,
@@ -53,6 +54,7 @@ from .prompts import (
 __all__ = [
     "Config",
     "MysqlConfig",
+    "PgConfig",
     "EmbeddingConfig",
     "VectorStoreConfig",
     "SplitterConfig",

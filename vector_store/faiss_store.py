@@ -1,11 +1,11 @@
-"""FAISS 后端：基于 faiss.IndexIDMap2 + MySQL 独立映射表反查。
+"""FAISS 后端：基于 faiss.IndexIDMap2 + 独立映射表反查。
 
 设计要点（与其他后端的核心差异）：
   - FAISS IndexIDMap2 要求 id 为 int64，无法直接存 UUID
-  - 通过 blake2b 把 UUID 哈希为 int64（mysql_store.uuid_to_int64），存入 FAISS
-  - MySQL 独立映射表（faiss_chunks_map / faiss_events_map / faiss_entities_map）维护
+  - 通过 blake2b 把 UUID 哈希为 int64（storage.uuid_to_int64），存入 FAISS
+  - 独立映射表（faiss_chunks_map / faiss_events_map / faiss_entities_map）维护
     faiss_hash ↔ uuid/source_id/document_id 映射，业务表（aisag_*）保持后端无关
-  - 查询时：FAISS 返回 hash → mysql_store.fetch_*_by_hashes JOIN 映射表+业务表反查
+  - 查询时：FAISS 返回 hash → db_store.fetch_*_by_hashes JOIN 映射表+业务表反查
   - 删除：直接 faiss.remove_ids（硬删除，不再用 JSON sidecar 软删）
   - 持久化：每个 collection 一个 .index 文件，add/delete 后写盘
   - 映射表设计便于未来把 FAISS 拆为独立微服务（迁表即可，不动业务表 schema）
@@ -14,9 +14,9 @@
   - 写入：O(N) 追加，触发持久化时整体重写（小数据可接受）
   - 查询：O(N) 暴力搜索（IndexFlatL2），N<100w 时毫秒级
   - 删除：faiss.remove_ids 内部需重建索引，O(N)
-  - source_id / document_id 过滤：通过 MySQL 反查 hash 集合做前置过滤（避免 faiss 大范围查询）
+  - source_id / document_id 过滤：通过 db_store 反查 hash 集合做前置过滤（避免 faiss 大范围查询）
 
-依赖：mysql_store（必须传入，用于 hash → UUID 反查）
+依赖：db_store（MysqlStore / PgStore，必须传入，用于 hash → UUID 反查）
 """
 from __future__ import annotations
 
@@ -27,10 +27,11 @@ from typing import TYPE_CHECKING, Any
 
 from ..base import Config
 from ..base.logger import get_logger
+from ..storage import uuid_to_int64
 from .base import BaseVectorStore, Collection
 
 if TYPE_CHECKING:
-    from ..storage.mysql_store import MysqlStore
+    from ..storage import MysqlStore, PgStore
 
 log = get_logger()
 
@@ -39,7 +40,7 @@ _COLLECTIONS: tuple[str, ...] = (
     "chunks", "event_titles", "event_contents", "event_summaries", "entities",
 )
 
-# collection → MySQL 业务表名映射（用于 hash 反查）
+# collection → DB 业务表名映射（用于 hash 反查）
 # 注意：event_titles / event_contents / event_summaries 三个 collection 都查 aisag_events 表
 _COLL_TO_TABLE: dict[str, str] = {
     "chunks": "aisag_chunks",
@@ -60,12 +61,12 @@ _COLL_TO_MAP_TABLE: dict[str, str] = {
 
 
 class FaissVectorStoreBackend(BaseVectorStore):
-    """FAISS 向量库后端（IndexIDMap2 + MySQL 独立映射表）。
+    """FAISS 向量库后端（IndexIDMap2 + 独立映射表）。
 
-    依赖 mysql_store 来完成 hash → UUID 反查（query 时）和 source_id 过滤。
+    依赖 db_store（MysqlStore / PgStore）来完成 hash → UUID 反查（query 时）和 source_id 过滤。
     """
 
-    def __init__(self, cfg: Config, mysql_store: "MysqlStore | None" = None) -> None:
+    def __init__(self, cfg: Config, db_store: "MysqlStore | PgStore | None" = None) -> None:
         import faiss
 
         self._cfg = cfg
@@ -73,14 +74,14 @@ class FaissVectorStoreBackend(BaseVectorStore):
         self._path = Path(cfg.vector_store.faiss_path)
         self._path.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._mysql = mysql_store
+        self._db = db_store
 
         # 每个 collection 一份 IndexIDMap2（包装 IndexFlatL2 以支持 add_with_ids）
         self._stores: dict[Collection, Any] = {}
         for name in _COLLECTIONS:
             self._stores[name] = self._load_or_create_index(name)
-        log.info("FAISS 向量库初始化完成 path={} dim={} mysql_linked={}",
-                 self._path, self._dim, mysql_store is not None)
+        log.info("FAISS 向量库初始化完成 path={} dim={} db_linked={}",
+                 self._path, self._dim, db_store is not None)
 
     # ---------------- 私有：持久化辅助 ----------------
 
@@ -111,19 +112,19 @@ class FaissVectorStoreBackend(BaseVectorStore):
         except Exception as e:
             log.error("FAISS 索引写入失败 collection={} err={}", name, e)
 
-    def _require_mysql(self) -> "MysqlStore":
-        if self._mysql is None:
+    def _require_db(self) -> "MysqlStore | PgStore":
+        if self._db is None:
             raise RuntimeError(
-                "FAISS 后端查询/反查需要 mysql_store，请在 create_vector_store 时传入")
-        return self._mysql
+                "FAISS 后端查询/反查需要 db_store，请在 create_vector_store 时传入")
+        return self._db
 
-    # ---------------- 同步接口：写入 / 删除（不依赖 mysql 反查）----------------
+    # ---------------- 同步接口：写入 / 删除（不依赖 DB 反查）----------------
 
     def add(self, name: Collection, ids: list[str], texts: list[str],
             embeddings: list[list[float]], metadatas: list[dict] | None = None) -> None:
         if not ids:
             return
-        from ..storage.mysql_store import uuid_to_int64
+        from ..storage import uuid_to_int64
         import faiss
         import numpy as np
 
@@ -153,8 +154,8 @@ class FaissVectorStoreBackend(BaseVectorStore):
               document_ids: list[str] | None = None) -> list[tuple[str, float]]:
         """同步查询：仅做 FAISS 检索，返回 hash 字符串（非 UUID）。
 
-        警告：FAISS 后端不推荐用同步 query，因为无法回查 MySQL 得到 UUID。
-        请使用异步 aquery（会自动回查 MySQL）。
+        警告：FAISS 后端不推荐用同步 query，因为无法回查 DB 得到 UUID。
+        请使用异步 aquery（会自动回查 DB）。
         """
         import numpy as np
         with self._lock:
@@ -178,20 +179,19 @@ class FaissVectorStoreBackend(BaseVectorStore):
         return hits
 
     def delete_by_source(self, source_id: str) -> None:
-        """按 source_id 删除向量。FAISS 无法直接过滤 metadata，需通过 MySQL 反查 hash 集合。
+        """按 source_id 删除向量。FAISS 无法直接过滤 metadata，需通过 DB 反查 hash 集合。
 
         此方法为同步接口，需在事件循环外调用（内部用 asyncio.run）。
         """
         self._async_run_sync(self._adelete_by_source_impl, source_id)
 
     def delete_by_document(self, source_id: str, document_id: str) -> None:
-        """按 (source_id, document_id) 删除。同样需通过 MySQL 反查 hash 集合。"""
+        """按 (source_id, document_id) 删除。同样需通过 DB 反查 hash 集合。"""
         self._async_run_sync(self._adelete_by_document_impl, source_id, document_id)
 
     def delete_entities_by_ids(self, entity_ids: list[str]) -> None:
         if not entity_ids:
             return
-        from ..storage.mysql_store import uuid_to_int64
         import faiss
         with self._lock:
             store = self._stores["entities"]
@@ -209,7 +209,7 @@ class FaissVectorStoreBackend(BaseVectorStore):
         """按 event_id 删除 event_titles / event_contents / event_summaries。"""
         if not event_ids:
             return
-        from ..storage.mysql_store import uuid_to_int64
+        from ..storage import uuid_to_int64
         import faiss
         with self._lock:
             hashes = [uuid_to_int64(eid) for eid in event_ids]
@@ -230,7 +230,6 @@ class FaissVectorStoreBackend(BaseVectorStore):
         """按 id 批量取已存向量。通过 faiss reconstruct + hash 反查 UUID（可选）。"""
         if not ids:
             return {}
-        from ..storage.mysql_store import uuid_to_int64
         result: dict[str, list[float]] = {}
         with self._lock:
             store = self._stores[name]
@@ -244,14 +243,14 @@ class FaissVectorStoreBackend(BaseVectorStore):
         return result
 
     def list_source_ids(self) -> list[str]:
-        """从 MySQL aisag_chunks 表反查所有 source_id（去重）。
+        """从 DB aisag_chunks 表反查所有 source_id（去重）。
 
         此方法为同步接口，需在事件循环外调用。
         """
         return self._async_run_sync(self._alist_source_ids_impl)
 
     def list_all_entity_ids(self) -> list[str]:
-        """从 MySQL aisag_entities 表反查所有 entity id（UUID）。"""
+        """从 DB aisag_entities 表反查所有 entity id（UUID）。"""
         return self._async_run_sync(self._alist_all_entity_ids_impl)
 
     # ---------------- 异步接口重写（FAISS 后端特有）----------------
@@ -260,19 +259,19 @@ class FaissVectorStoreBackend(BaseVectorStore):
                      similarity_threshold: float = 0.0,
                      source_ids: list[str] | None = None,
                      document_ids: list[str] | None = None) -> list[tuple[str, float]]:
-        """异步查询：FAISS 检索 → MySQL 反查 UUID → 返回 [(uuid, sim), ...]。
+        """异步查询：FAISS 检索 → DB 反查 UUID → 返回 [(uuid, sim), ...]。
 
         流程：
-          1. 如果 source_ids/document_ids 过滤，先从 MySQL 反查 hash 集合做白名单
+          1. 如果 source_ids/document_ids 过滤，先从 DB 反查 hash 集合做白名单
           2. FAISS search 拿到 (hash, dist) 列表
-          3. MySQL fetch_*_by_hashes 反查 UUID
+          3. DB fetch_*_by_hashes 反查 UUID
           4. 返回 [(uuid, sim), ...]
         """
         import numpy as np
-        mysql = self._require_mysql()
+        db = self._require_db()
 
         # 1. source_id / document_id 过滤 → 反查 hash 集合
-        # 简化处理：fetch top_k*3，然后逐个查 MySQL 过滤
+        # 简化处理：fetch top_k*3，然后逐个查 DB 过滤
         with self._lock:
             store = self._stores[name]
             q = np.array([query_embedding], dtype=np.float32)
@@ -295,17 +294,17 @@ class FaissVectorStoreBackend(BaseVectorStore):
 
         # 2. 反查 UUID（按 collection 走对应映射表+业务表 JOIN）
         if name == "chunks":
-            rows = await mysql.fetch_chunks_by_hashes([h for h, _ in candidates])
+            rows = await db.fetch_chunks_by_hashes([h for h, _ in candidates])
             hash_to_uuid = {int(r["faiss_hash"]): str(r["id"]) for r in rows}
             hash_to_source = {int(r["faiss_hash"]): str(r["source_id"]) for r in rows}
             hash_to_doc = {int(r["faiss_hash"]): str(r["document_id"]) for r in rows}
         elif name in ("event_titles", "event_contents", "event_summaries"):
-            rows = await mysql.fetch_events_by_hashes([h for h, _ in candidates])
+            rows = await db.fetch_events_by_hashes([h for h, _ in candidates])
             hash_to_uuid = {int(r["faiss_hash"]): str(r["id"]) for r in rows}
             hash_to_source = {int(r["faiss_hash"]): str(r["source_id"]) for r in rows}
             hash_to_doc = {int(r["faiss_hash"]): str(r["document_id"]) for r in rows}
         else:  # entities
-            rows = await mysql.fetch_entities_by_hashes([h for h, _ in candidates])
+            rows = await db.fetch_entities_by_hashes([h for h, _ in candidates])
             hash_to_uuid = {int(r["faiss_hash"]): str(r["id"]) for r in rows}
             hash_to_source = {}  # entities 不按 source 过滤
             hash_to_doc = {}
@@ -317,7 +316,7 @@ class FaissVectorStoreBackend(BaseVectorStore):
         for h, sim in candidates:
             uid = hash_to_uuid.get(h)
             if uid is None:
-                continue  # MySQL 中查不到（可能已被删除但 FAISS 未同步）
+                continue  # DB 中查不到（可能已被删除但 FAISS 未同步）
             if src_filter is not None and hash_to_source.get(h) not in src_filter:
                 continue
             if doc_filter is not None and hash_to_doc.get(h) not in doc_filter:
@@ -352,16 +351,13 @@ class FaissVectorStoreBackend(BaseVectorStore):
     async def _adelete_by_source_impl(self, source_id: str) -> None:
         """按 source_id 删除：从映射表反查 hash → faiss remove_ids。"""
         import faiss
-        mysql = self._require_mysql()
+        db = self._require_db()
         # chunks + events 都有 source_id，entities 不删
         for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
             map_table = _COLL_TO_MAP_TABLE[name]
-            # 直接从映射表查 hash（映射表带 source_id 索引，且为 FAISS 专用）
-            rows = await mysql._fetchall(
-                f"SELECT faiss_hash FROM {map_table} WHERE source_id=%s", (source_id,))
-            if not rows:
+            hashes = await db.fetch_hashes_by_source(map_table, source_id)
+            if not hashes:
                 continue
-            hashes = [int(r["faiss_hash"]) for r in rows]
             with self._lock:
                 store = self._stores[name]
                 selector = faiss.IDSelectorBatch(hashes)
@@ -377,15 +373,12 @@ class FaissVectorStoreBackend(BaseVectorStore):
 
     async def _adelete_by_document_impl(self, source_id: str, document_id: str) -> None:
         import faiss
-        mysql = self._require_mysql()
+        db = self._require_db()
         for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
             map_table = _COLL_TO_MAP_TABLE[name]
-            rows = await mysql._fetchall(
-                f"SELECT faiss_hash FROM {map_table} WHERE source_id=%s AND document_id=%s",
-                (source_id, document_id))
-            if not rows:
+            hashes = await db.fetch_hashes_by_source_document(map_table, source_id, document_id)
+            if not hashes:
                 continue
-            hashes = [int(r["faiss_hash"]) for r in rows]
             with self._lock:
                 store = self._stores[name]
                 selector = faiss.IDSelectorBatch(hashes)
@@ -400,21 +393,17 @@ class FaissVectorStoreBackend(BaseVectorStore):
                               name, source_id, document_id, e)
 
     async def _alist_source_ids_impl(self) -> list[str]:
-        """从 MySQL aisag_chunks 表查所有 source_id（去重）。"""
-        mysql = self._require_mysql()
-        rows = await mysql._fetchall("SELECT DISTINCT source_id FROM aisag_chunks", ())
-        return [str(r["source_id"]) for r in rows]
+        """从 DB aisag_chunks 表查所有 source_id（去重）。"""
+        return await self._require_db().fetch_distinct_source_ids()
 
     async def _alist_all_entity_ids_impl(self) -> list[str]:
-        """从 MySQL aisag_entities 表查所有 entity id（UUID）。"""
-        mysql = self._require_mysql()
-        rows = await mysql._fetchall("SELECT id FROM aisag_entities", ())
-        return [str(r["id"]) for r in rows]
+        """从 DB aisag_entities 表查所有 entity id（UUID）。"""
+        return await self._require_db().fetch_all_entity_ids()
 
     # ---------------- 一致性校验 ----------------
 
     async def verify_integrity(self) -> dict[str, dict[str, Any]]:
-        """FAISS ↔ MySQL 映射表一致性对账。
+        """FAISS ↔ DB 映射表一致性对账。
 
         对每个 collection 做集合差集：
           - FAISS 多出的 hash = 孤儿向量（应删未删，空间泄漏）
@@ -424,7 +413,7 @@ class FaissVectorStoreBackend(BaseVectorStore):
             {
                 collection_name: {
                     "faiss_count": int,      # FAISS 中向量总数
-                    "mysql_count": int,      # 映射表中记录数
+                    "db_count": int,      # 映射表中记录数
                     "match": int,            # 双方一致的数量
                     "orphans_in_faiss": int, # FAISS 有但映射表无（脏向量）
                     "missing_in_faiss": int, # 映射表有但 FAISS 无（丢失向量）
@@ -435,7 +424,7 @@ class FaissVectorStoreBackend(BaseVectorStore):
             }
         """
         import faiss
-        mysql = self._require_mysql()
+        db = self._require_db()
         report: dict[str, dict[str, Any]] = {}
 
         for name in _COLLECTIONS:
@@ -453,18 +442,17 @@ class FaissVectorStoreBackend(BaseVectorStore):
                     log.error("FAISS 读取 id_map 失败 collection={} err={}", name, e)
 
             # 2. 取映射表所有 faiss_hash
-            rows = await mysql._fetchall(
-                f"SELECT faiss_hash FROM {map_table}", ())
-            mysql_hashes: set[int] = set(int(r["faiss_hash"]) for r in rows)
+            db_hashes_list = await db.fetch_all_hashes(map_table)
+            db_hashes: set[int] = set(db_hashes_list)
 
             # 3. 集合差集
-            orphans = faiss_hashes - mysql_hashes       # FAISS 有但映射表无
-            missing = mysql_hashes - faiss_hashes       # 映射表有但 FAISS 无
-            match = faiss_hashes & mysql_hashes
+            orphans = faiss_hashes - db_hashes       # FAISS 有但映射表无
+            missing = db_hashes - faiss_hashes       # 映射表有但 FAISS 无
+            match = faiss_hashes & db_hashes
 
             report[name] = {
                 "faiss_count": len(faiss_hashes),
-                "mysql_count": len(mysql_hashes),
+                "db_count": len(db_hashes),
                 "match": len(match),
                 "orphans_in_faiss": len(orphans),
                 "missing_in_faiss": len(missing),
@@ -473,8 +461,8 @@ class FaissVectorStoreBackend(BaseVectorStore):
             }
 
             log.info(
-                "对账 collection={} faiss={} mysql={} 一致={} 孤儿(FAISS多)={} 丢失(FAISS缺)={}",
-                name, len(faiss_hashes), len(mysql_hashes), len(match),
+                "对账 collection={} faiss={} db={} 一致={} 孤儿(FAISS多)={} 丢失(FAISS缺)={}",
+                name, len(faiss_hashes), len(db_hashes), len(match),
                 len(orphans), len(missing))
 
         return report
@@ -508,12 +496,11 @@ class FaissVectorStoreBackend(BaseVectorStore):
                     result[name] = 0
                     continue
 
-            mysql = self._require_mysql()
+            db = self._require_db()
             map_table = _COLL_TO_MAP_TABLE[name]
-            rows = await mysql._fetchall(
-                f"SELECT faiss_hash FROM {map_table}", ())
-            mysql_hashes = set(int(r["faiss_hash"]) for r in rows)
-            orphans = list(faiss_hashes - mysql_hashes)
+            db_hashes_list = await db.fetch_all_hashes(map_table)
+            db_hashes = set(db_hashes_list)
+            orphans = list(faiss_hashes - db_hashes)
 
             if not orphans:
                 result[name] = 0

@@ -19,7 +19,7 @@ from ..extractor import EventExtractor
 from ..llm import LlmFactory
 from ..loader import DocumentLoader
 from ..splitter import create_splitter
-from ..storage import MysqlStore
+from ..storage import create_db_store
 from ..vector_store import create_vector_store
 
 log = get_logger()
@@ -71,17 +71,11 @@ class IngestPipeline:
             summary_max_chars=self.cfg.ingest.summary_max_chars,
             title_max_chars=self.cfg.ingest.title_max_chars,
         )
-        self.db = MysqlStore(
-            host=self.cfg.mysql.host, port=self.cfg.mysql.port,
-            user=self.cfg.mysql.user, password=self.cfg.mysql.password,
-            database=self.cfg.mysql.database,
-            pool_size=self.cfg.mysql.pool_size,
-            max_overflow=self.cfg.mysql.max_overflow,
-            pool_timeout=self.cfg.mysql.pool_timeout,
-            pool_recycle=self.cfg.mysql.pool_recycle,
+        self.db = create_db_store(
+            self.cfg,
             faiss_map_enabled=(self.cfg.vector_store.backend.lower() == "faiss"),
         )
-        self.vectors = create_vector_store(self.cfg, mysql_store=self.db)
+        self.vectors = create_vector_store(self.cfg, db_store=self.db)
         self._reconcile_task: asyncio.Task | None = None
         # 并发入库信号量：限制同时入库的文档数，防止 LLM API rate limit / embedding OOM
         self._ingest_semaphore = asyncio.Semaphore(self.cfg.ingest.concurrency)

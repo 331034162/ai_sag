@@ -19,7 +19,7 @@ from ..base import (
 from ..base.logger import get_logger
 from ..embeddings import create_embedder
 from ..llm import LlmFactory
-from ..storage import MysqlStore
+from ..storage import create_db_store, MysqlStore, PgStore
 from ..vector_store import BaseVectorStore, create_vector_store
 from .sag_retriever import SagRetriever
 
@@ -30,7 +30,7 @@ MAX_HISTORY_ROUNDS = 5
 
 class QAEngine:
     def __init__(self, cfg: Config | None = None, *,
-                 db: MysqlStore | None = None,
+                 db: MysqlStore | PgStore | None = None,
                  vectors: BaseVectorStore | None = None) -> None:
         self.cfg = cfg or Config()
         self.embedder = create_embedder(self.cfg)
@@ -39,17 +39,11 @@ class QAEngine:
         # self.llm 作为检索器兜底 LLM：用 ANSWER 场景的实例（检索器内部会用 _llm_for 按场景选取）
         self.llm: LLM = self._llm_factory.get("ANSWER")
         self._owns_db = db is None
-        self.db = db or MysqlStore(
-            host=self.cfg.mysql.host, port=self.cfg.mysql.port,
-            user=self.cfg.mysql.user, password=self.cfg.mysql.password,
-            database=self.cfg.mysql.database,
-            pool_size=self.cfg.mysql.pool_size,
-            max_overflow=self.cfg.mysql.max_overflow,
-            pool_timeout=self.cfg.mysql.pool_timeout,
-            pool_recycle=self.cfg.mysql.pool_recycle,
+        self.db = db or create_db_store(
+            self.cfg,
             faiss_map_enabled=(self.cfg.vector_store.backend.lower() == "faiss"),
         )
-        self.vectors = vectors or create_vector_store(self.cfg, mysql_store=self.db)
+        self.vectors = vectors or create_vector_store(self.cfg, db_store=self.db)
         self.retriever = SagRetriever(self.cfg, self.db, self.vectors, self.embedder, self.llm,
                                       llm_factory=self._llm_factory)
 

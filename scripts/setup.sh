@@ -74,14 +74,14 @@ if [ "$ACTION" = "help" ]; then
     echo "选项："
     echo "  （无参数）   CPU 模式，安装依赖 + 启动服务"
     echo "  gpu         GPU 模式，安装 CUDA 依赖 + 启动服务"
-    echo "  check       仅检查 Python / MySQL / .env 环境"
+    echo "  check       仅检查 Python / 关系库 / .env 环境"
     echo "  install     仅安装依赖，不启动服务"
     echo "  start       仅启动 API + Web UI"
     echo "  help        显示此帮助"
     echo ""
     echo "首次使用："
     echo "  1. 准备 .env 文件（会从 .env.example 复制模板）"
-    echo "  2. 编辑 .env 填写 MySQL / LLM API Key / Embedding 路径"
+    echo "  2. 编辑 .env 填写 关系库（MySQL/PG）/ LLM API Key / Embedding 路径"
     echo "  3. 运行 ./setup.sh"
     echo ""
     echo "更多帮助：docs/STARTUP.md"
@@ -117,12 +117,24 @@ check_env() {
         ok ".env 已找到"
     fi
 
-    # 检查 .env 中的必填项（MySQL / 各场景 _LLM_NAME / Embedding 路径）
+    # 检查 .env 中的必填项（关系库按 AISAG_DB_BACKEND 选择 MySQL/PG / 各场景 _LLM_NAME / Embedding 路径）
     "$PYTHON" -c "
 import os
+backend = (os.environ.get('AISAG_DB_BACKEND') or 'mysql').lower()
+if backend == 'postgresql':
+    db_vars = {
+        'SAG_PG_HOST': 'PostgreSQL地址',
+        'SAG_PG_USER': 'PostgreSQL用户',
+        'SAG_PG_PASSWORD': 'PostgreSQL密码',
+    }
+else:
+    db_vars = {
+        'SAG_MYSQL_HOST': 'MySQL地址',
+        'SAG_MYSQL_USER': 'MySQL用户',
+        'SAG_MYSQL_PASSWORD': 'MySQL密码',
+    }
 vars = {
-    'SAG_MYSQL_HOST': 'MySQL地址', 'SAG_MYSQL_USER': 'MySQL用户',
-    'SAG_MYSQL_PASSWORD': 'MySQL密码',
+    **db_vars,
     'SAG_LLM_PROFILE_ANSWER_LLM_NAME': '答案生成场景 profile 名',
     'SAG_LLM_PROFILE_GENRE_CLASSIFY_LLM_NAME': '体裁分类场景 profile 名',
     'SAG_LLM_PROFILE_EVENT_EXTRACT_LLM_NAME': '事件抽取场景 profile 名',
@@ -191,8 +203,8 @@ if [ ! -f "$SRC_DIR/.env" ]; then
     echo -e "  ${C_BOLD}============================================${C_RESET}"
     echo -e "  ${C_YELLOW}  请编辑 .env 文件，填写以下必填项：${C_RESET}"
     echo ""
-    echo "     1. MySQL 连接信息（SAG_MYSQL_*）"
-    echo "     2. LLM API Key 及地址（SAG_LLM_*）"
+    echo "     1. 关系库后端（AISAG_DB_BACKEND=mysql|postgresql）及对应连接信息"
+    echo "     2. LLM API Key 及地址（SAG_LLM_*，配合 llm_profiles.yaml）"
     echo "     3. Embedding 模型路径（SAG_EMBEDDING_MODEL_PATH）"
     echo ""
     echo "   文件位置: $SRC_DIR/.env"

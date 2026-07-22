@@ -175,10 +175,20 @@ LLM_SCENES = (
 
 
 # ---------- 关键变量缺失检查 ----------
+# 根据 AISAG_DB_BACKEND 选择检查 MySQL 还是 PostgreSQL 的必填变量。
+# 默认 "mysql" 保持向后兼容。
+_DB_BACKEND = _env("AISAG_DB_BACKEND", "mysql").lower()
 _MISSING = []
-for _k, _desc in [("SAG_MYSQL_USER", "MySQL 用户名"), ("SAG_MYSQL_PASSWORD", "MySQL 密码")]:
-    if not _env(_k):
-        _MISSING.append(f"  - {_k}（{_desc}）")
+if _DB_BACKEND == "postgresql":
+    for _k, _desc in [("SAG_PG_USER", "PostgreSQL 用户名"),
+                       ("SAG_PG_PASSWORD", "PostgreSQL 密码")]:
+        if not _env(_k):
+            _MISSING.append(f"  - {_k}（{_desc}）")
+else:
+    for _k, _desc in [("SAG_MYSQL_USER", "MySQL 用户名"),
+                       ("SAG_MYSQL_PASSWORD", "MySQL 密码")]:
+        if not _env(_k):
+            _MISSING.append(f"  - {_k}（{_desc}）")
 if _MISSING:
     _hint = ""
     if _ENV_PATH is None:
@@ -211,6 +221,20 @@ class MysqlConfig:
     pool_timeout: float = field(default_factory=lambda: float(_env("AISAG_MYSQL_POOL_TIMEOUT", "30")))
     # 连接回收时间（秒），防止 MySQL 8 小时断连
     pool_recycle: int = field(default_factory=lambda: int(_env("AISAG_MYSQL_POOL_RECYCLE", "3600")))
+
+
+@dataclass
+class PgConfig:
+    """PostgreSQL 连接配置（AISAG_DB_BACKEND=postgresql 时使用）。"""
+    host: str = field(default_factory=lambda: _env("SAG_PG_HOST", "localhost"))
+    port: int = field(default_factory=lambda: int(_env("SAG_PG_PORT", "5432")))
+    user: str = field(default_factory=lambda: _env("SAG_PG_USER", "postgres"))
+    password: str = field(default_factory=lambda: _env("SAG_PG_PASSWORD", ""))
+    database: str = field(default_factory=lambda: _env("SAG_PG_DATABASE", "sag"))
+    pool_size: int = field(default_factory=lambda: int(_env("AISAG_PG_POOL_SIZE", "10")))
+    max_overflow: int = field(default_factory=lambda: int(_env("AISAG_PG_MAX_OVERFLOW", "5")))
+    pool_timeout: float = field(default_factory=lambda: float(_env("AISAG_PG_POOL_TIMEOUT", "30")))
+    pool_recycle: int = field(default_factory=lambda: int(_env("AISAG_PG_POOL_RECYCLE", "3600")))
 
 
 @dataclass
@@ -651,7 +675,11 @@ class PdfDocParserConfig:
 
 @dataclass
 class Config:
+    # 数据库后端：mysql（默认）| postgresql
+    # 环境变量 AISAG_DB_BACKEND 控制
+    db_backend: str = field(default_factory=lambda: _env("AISAG_DB_BACKEND", "mysql").lower())
     mysql: MysqlConfig = field(default_factory=MysqlConfig)
+    pg: PgConfig = field(default_factory=PgConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     # 多场景 LLM 配置：按 6 个场景（GENRE_CLASSIFY / EVENT_EXTRACT /
     # QUERY_REWRITE / ENTITY_EXTRACT / RERANK / ANSWER）独立配置 profile 和运行参数。
