@@ -64,6 +64,11 @@ class MilvusVectorStoreBackend(BaseVectorStore):
                 similarity_top_k=10,
             )
             self._stores[name] = store
+            # Milvus collection 创建后默认处于 released 状态，需显式 load 才能查询
+            try:
+                store.client.load_collection(collection_name)
+            except Exception:
+                pass  # 新创建的 collection 为空时 load 可能抛异常，忽略即可
         log.info("Milvus 向量库初始化完成 uri={} dim={} prefix={}",
                  cfg.vector_store.milvus_uri, self._dim, self._prefix)
 
@@ -140,9 +145,13 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         result = self._store(name).query(vsq)
         hits: list[tuple[str, float]] = []
         if result.nodes and result.similarities is not None:
-            for node, sim in zip(result.nodes, result.similarities):
+            # 优先用 result.ids（Milvus 主键，即写入时的实体/chunk ID），
+            # 因为 node.node_id 在 _node_content 未正确反序列化时是自动生成的随机 UUID
+            safe_ids = result.ids or []
+            for idx, (node, sim) in enumerate(zip(result.nodes, result.similarities)):
                 if sim >= similarity_threshold:
-                    hits.append((node.node_id, float(sim)))
+                    real_id = safe_ids[idx] if idx < len(safe_ids) else node.node_id
+                    hits.append((real_id, float(sim)))
         log.debug("向量查询 collection={} top_k={} 阈值={} 结果数={}",
                   name, top_k, similarity_threshold, len(hits))
         return hits
