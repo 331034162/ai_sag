@@ -22,97 +22,99 @@
 # ------------------------------------------------------------
 # PaddlePaddle GPU 版需从官方源安装，否则会装成 CPU 版
 --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu124/
-paddlepaddle-gpu>=3.0.0       # PaddlePaddle GPU 后端（PaddleOCR 运行时依赖）
-paddleocr>=3.6.0              # PaddleOCR — 精度高，GPU 可加速
+paddlepaddle-gpu==3.2.0       # PaddlePaddle GPU 后端（PaddleOCR 运行时依赖）
+paddleocr==3.6.0              # PaddleOCR — 精度高，GPU 可加速
 
 # RapidOCR 用 onnxruntime-gpu 推理（注意：不要装 rapidocr-onnxruntime，它会自动拉 CPU 版 onnxruntime）
-onnxruntime-gpu>=1.18.0       # ONNX Runtime GPU 后端
-rapidocr-onnxruntime>=1.4.0   # RapidOCR — 基于 ONNX Runtime，CPU 速度快、轻量（GPU 推理时也会用 GPU）
+onnxruntime-gpu==1.18.0       # ONNX Runtime GPU 后端
+rapidocr-onnxruntime==1.4.4   # RapidOCR — 基于 ONNX Runtime，CPU 速度快、轻量（GPU 推理时也会用 GPU）
 
 # ------------------------------------------------------------
 # 图像处理
 # ------------------------------------------------------------
-opencv-contrib-python>=4.10.0 # cv2（含 inpaint 等扩展模块）
-numpy>=1.26.0
+opencv-contrib-python==4.10.0.84 # cv2（含 inpaint 等扩展模块）
+numpy==2.5.1
 
 # ------------------------------------------------------------
 # PDF 解析
 # ------------------------------------------------------------
-PyMuPDF>=1.25.0               # fitz — PDF 读写、文字/图片提取、bbox 查询
-pymupdf4llm>=1.0.0            # PDF → Markdown 转换
+PyMuPDF==1.27.2.3             # fitz — PDF 读写、文字/图片提取、bbox 查询
+pymupdf4llm==1.27.2.3         # PDF → Markdown 转换
 
 # ------------------------------------------------------------
 # LlamaIndex 框架
 # ------------------------------------------------------------
-llama-index-core>=0.12.0      # 核心：索引、查询引擎、Agent
-llama-index>=0.12.0           # 聚合安装入口
-llama-index-llms-openai>=0.3.0            # OpenAI 兼容 LLM（DeepSeek 等）
-llama-index-embeddings-huggingface>=0.4.0 # HuggingFace 本地 Embedding
+llama-index-core==0.14.23     # 核心：索引、查询引擎、Agent
+llama-index==0.14.21          # 聚合安装入口
+llama-index-llms-openai==0.7.8            # OpenAI 兼容 LLM（DeepSeek 等）
+llama-index-embeddings-huggingface==0.7.0 # HuggingFace 本地 Embedding
 
 # ------------------------------------------------------------
 # 向量数据库（四选一，通过 AISAG_VECTOR_STORE_BACKEND 切换）
 # 推荐使用 pgvector：与关系库共用一个 PostgreSQL，无需额外中间件
 # ------------------------------------------------------------
 # PGVector（推荐，与关系库合一部署）
-llama-index-vector-stores-postgres>=0.3.0  # LlamaIndex PGVector 集成
-sqlalchemy>=2.0.0                          # ORM 与连接管理（PGVector 后端元数据查询用）
+llama-index-vector-stores-postgres==0.8.1 # LlamaIndex PGVector 集成
+sqlalchemy==2.0.49                        # ORM 与连接管理（PGVector 后端元数据查询用）
 # ChromaDB（本地轻量持久化）
-chromadb>=1.0.0                            # ChromaDB 向量库
-llama-index-vector-stores-chroma>=0.3.0    # LlamaIndex ChromaDB 集成
+chromadb==1.5.9                           # ChromaDB 向量库
+llama-index-vector-stores-chroma==0.5.5   # LlamaIndex ChromaDB 集成
 # FAISS（单机内存向量检索，CPU 版，GPU 版见下方说明）
-faiss-cpu>=1.8.0                           # FAISS 索引
-llama-index-vector-stores-faiss>=0.3.0     # LlamaIndex FAISS 集成
+faiss-cpu==1.14.2                         # FAISS 索引
+llama-index-vector-stores-faiss==0.6.0    # LlamaIndex FAISS 集成
 # Milvus（分布式向量库）
-pymilvus>=2.4.0                            # Milvus Python 客户端
-llama-index-vector-stores-milvus>=0.3.0    # LlamaIndex Milvus 集成
+pymilvus==2.6.17                          # Milvus Python 客户端
+llama-index-vector-stores-milvus==1.1.0   # LlamaIndex Milvus 集成
+milvus-lite==3.1.0                        # Milvus 本地嵌入式运行时（milvus.db URI 必需）
 # 注：如需 FAISS GPU 加速，改用 faiss-gpu（需 CUDA Toolkit 与 NVIDIA 驱动），
 # 安装：pip install faiss-gpu-cu12  或  conda install -c conda-forge faiss-gpu
 
 # ------------------------------------------------------------
 # 关系型数据库（SAG 事件-实体超边存储，PostgreSQL 推荐 / MySQL）
 # ------------------------------------------------------------
-asyncpg>=0.29.0               # PostgreSQL 异步驱动（关系库 / PGVector 异步引擎，推荐）
-psycopg2-binary>=2.9.0        # PostgreSQL 同步驱动（PGVector 同步引擎元数据查询用）
-pgvector>=0.3.0               # pgvector Python 类型支持（向量列类型映射）
-aiomysql>=0.2.0               # MySQL 异步驱动（备选）
+asyncpg==0.31.0                # PostgreSQL 异步驱动（关系库 / PGVector 异步引擎，推荐）
+psycopg2-binary==2.9.12        # PostgreSQL 同步驱动（PGVector 同步引擎元数据查询用）
+pgvector==0.5.0                # pgvector Python 类型支持（向量列类型映射）
+aiomysql==0.3.2                # MySQL 异步驱动（备选）
 
 # ------------------------------------------------------------
 # Embedding / 模型推理
 # ------------------------------------------------------------
-torch>=2.12.0                 # PyTorch GPU 版（通过 --extra-index-url 安装 CUDA 版）
-transformers>=4.40.0          # HuggingFace Transformers（Qwen3 Embedding）
+torch==2.12.0                  # PyTorch GPU 版（通过 --extra-index-url 安装 CUDA 版）
+transformers==5.9.0            # HuggingFace Transformers（Qwen3 Embedding）
+sentence-transformers==5.5.1   # SentenceTransformer（BGE 等 Embedding 模型）
 
 # ------------------------------------------------------------
 # Word 文档解析
 # ------------------------------------------------------------
-python-docx>=1.1.0            # .docx 读写
-lxml>=5.0.0                   # XML 处理（Word 底层 XML 解析）
+python-docx==1.2.0             # .docx 读写
+lxml==6.1.1                    # XML 处理（Word 底层 XML 解析）
 
 # ------------------------------------------------------------
 # Excel 文档解析
 # ------------------------------------------------------------
-openpyxl>=3.1.0               # .xlsx 读写
+openpyxl==3.1.5                # .xlsx 读写
 
 # ------------------------------------------------------------
 # LLM API 客户端
 # ------------------------------------------------------------
-openai>=1.0.0                 # OpenAI SDK
+openai==2.36.0                 # OpenAI SDK
 
 # ------------------------------------------------------------
 # 云存储（可选，S3 路径时才加载）
 # ------------------------------------------------------------
-boto3>=1.34.0                 # AWS S3 文件下载
+boto3==1.43.26                 # AWS S3 文件下载
 
 # ------------------------------------------------------------
 # 工具库
 # ------------------------------------------------------------
-pydantic>=2.0.0               # 数据校验与序列化（API Schema、配置模型）
-python-dotenv>=1.0.0          # 从 .env 加载环境变量
-loguru>=0.7.2                 # 结构化日志（控制台/文件双输出、异步写入、轮转压缩）
+pydantic==2.13.4               # 数据校验与序列化（API Schema、配置模型）
+python-dotenv==1.2.2           # 从 .env 加载环境变量
+loguru==0.7.3                  # 结构化日志（控制台/文件双输出、异步写入、轮转压缩）
 
 # ------------------------------------------------------------
 # Web 服务（SAG API 与前端）
 # ------------------------------------------------------------
-fastapi>=0.110.0              # Web 框架
-uvicorn>=0.29.0               # ASGI 服务器
-python-multipart>=0.0.9       # 文件上传支持
+fastapi==0.109.2               # Web 框架
+uvicorn==0.30.6                # ASGI 服务器
+python-multipart==0.0.32       # 文件上传支持
