@@ -91,7 +91,6 @@ class TableSplitter(BaseSplitter):
                         rank_index=rank,
                         heading=sheet_name or doc.title or "表格",
                         content=chunk_text,
-                        metadata={"sheet": sheet_name, "node_id": f"table-{rank}"},
                     ))
                     rank += 1
 

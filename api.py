@@ -298,7 +298,9 @@ def create_app() -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            code = getattr(e, 'args', [None])[0]
+            # MySQL 1062 = Duplicate entry（重复上传）；pymilvus 异常 args 可能为空
+            args = getattr(e, 'args', ())
+            code = args[0] if args else None
             if code == 1062:
                 log.warning("重复上传拦截 file={} name={} md5={}", file.filename, source_name, file_md5)
                 raise HTTPException(409, "文件已存在（文件名和内容均相同）")

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from llama_index.core.schema import TextNode
+from pymilvus import DataType
+
+from llama_index.core.schema import TextNode, NodeRelationship, RelatedNodeInfo
 from llama_index.core.vector_stores import (
     MetadataFilters,
     MetadataFilter,
@@ -39,6 +41,31 @@ _COLLECTIONS: tuple[str, ...] = (
 _NO_SOURCE_FILTER: set[str] = {"entities"}
 
 
+def _missing_scalar_fields(client: Any, collection_name: str,
+                          fields: list[str]) -> list[str] | None:
+    """返回字段中尚未建索引的列表；若连接失败无法判断则返回 None。"""
+    try:
+        index_names = client.list_indexes(collection_name) or []
+    except Exception:
+        return None  # 无法判断
+
+    indexed: set[str] = set()
+    for idx_name in index_names:
+        try:
+            info = client.describe_index(collection_name, idx_name)
+            # MilvusClient 返回 IndexInfo 对象（属性访问），旧客户端返回 dict
+            field_name = (
+                getattr(info, "field_name", None)
+                or getattr(info, "fieldName", None)
+            )
+            if field_name:
+                indexed.add(field_name)
+        except Exception:
+            pass
+
+    return [f for f in fields if f not in indexed]
+
+
 class MilvusVectorStoreBackend(BaseVectorStore):
     """Milvus 向量库后端。"""
 
@@ -53,24 +80,95 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         self._stores: dict[Collection, MilvusVectorStore] = {}
         for name in _COLLECTIONS:
             collection_name = f"{self._prefix}{name}"
-            store = MilvusVectorStore(
-                uri=cfg.vector_store.milvus_uri or None,
-                token=cfg.vector_store.milvus_token or None,
-                dim=self._dim,
-                collection_name=collection_name,
-                overwrite=self._overwrite,
-                # Milvus 默认使用 cosine metric，与 L2 归一化后的余弦相似度一致
-                # similarity_top_k 在 query 时显式传，这里仅是构造默认值
-                similarity_top_k=10,
-            )
+            # entities 为全局共享实体库，不归属任何 source/document，故不加 source_id 字段
+            # 其余 collection 加 source_id 独立 VARCHAR 字段，可建 INVERTED 索引
+            if name in _NO_SOURCE_FILTER:
+                store = MilvusVectorStore(
+                    uri=cfg.vector_store.milvus_uri or None,
+                    token=cfg.vector_store.milvus_token or None,
+                    dim=self._dim,
+                    collection_name=collection_name,
+                    overwrite=self._overwrite,
+                    similarity_top_k=10,
+                )
+            else:
+                store = MilvusVectorStore(
+                    uri=cfg.vector_store.milvus_uri or None,
+                    token=cfg.vector_store.milvus_token or None,
+                    dim=self._dim,
+                    collection_name=collection_name,
+                    overwrite=self._overwrite,
+                    # source_id 作为独立 VARCHAR 字段加入 schema，可建 INVERTED 索引
+                    # node_to_metadata_dict 已将 metadata["source_id"] 写入 $meta，
+                    # enable_dynamic_field=True 下自动匹配到 schema 同名字段
+                    scalar_field_names=["source_id"],
+                    scalar_field_types=[DataType.VARCHAR],
+                    # Milvus 默认使用 cosine metric，与 L2 归一化后的余弦相似度一致
+                    # similarity_top_k 在 query 时显式传，这里仅是构造默认值
+                    similarity_top_k=10,
+                )
             self._stores[name] = store
+            # 为 source_id / document_id 建 INVERTED 索引（支持则建，不支持静默跳过）
+            if name not in _NO_SOURCE_FILTER:
+                self._ensure_scalar_index(store.client, collection_name)
             # Milvus collection 创建后默认处于 released 状态，需显式 load 才能查询
             try:
                 store.client.load_collection(collection_name)
             except Exception:
                 pass  # 新创建的 collection 为空时 load 可能抛异常，忽略即可
-        log.info("Milvus 向量库初始化完成 uri={} dim={} prefix={}",
-                 cfg.vector_store.milvus_uri, self._dim, self._prefix)
+
+        # 打印 Milvus 运行模式与服务端版本
+        _uri = (cfg.vector_store.milvus_uri or "").strip()
+        is_lite = _uri.endswith(".db")
+        mode = "milvus-lite（本地嵌入式）" if is_lite else "远程 Milvus 服务"
+        try:
+            server_ver = self._stores["chunks"].client.get_server_version()
+        except Exception:
+            server_ver = "未知"
+        log.info("Milvus 向量库初始化完成 模式={} 服务端版本={} uri={} dim={} prefix={}",
+                 mode, server_ver, cfg.vector_store.milvus_uri, self._dim, self._prefix)
+
+    @staticmethod
+    def _ensure_scalar_index(client: Any, collection_name: str) -> None:
+        """为 doc_id / source_id 字段确保已有标量索引，无则建 INVERTED。
+
+        - doc_id：llama_index 默认创建的独立 VARCHAR 字段
+        - source_id：通过 scalar_field_names 加入 schema 的独立 VARCHAR 字段
+
+        已有索引（含 Trie / INVERTED 等）直接复用，不强制重建。
+        """
+        # 1. 检查哪些字段已有索引（索引名不可靠，优先用字段名判断）
+        fields_missing = _missing_scalar_fields(client, collection_name, ["doc_id", "source_id"])
+        if not fields_missing:
+            return
+
+        # 2. 如果 list_indexes 断连失败 → 跳过建索引（不阻塞启动）
+        if fields_missing is None:
+            log.warning("无法查询 collection={} 现有索引（Milvus 连接不可用），跳过建索引",
+                        collection_name)
+            return
+
+        try:
+            from pymilvus.client.constants import LoadState
+            if client.get_load_state(collection_name) == LoadState.Loaded:
+                client.release_collection(collection_name)
+        except Exception:
+            pass
+
+        index_params = client.prepare_index_params()
+        for field_name in fields_missing:
+            index_params.add_index(
+                field_name=field_name,
+                index_type="INVERTED",
+                index_name=f"idx_{field_name}",
+            )
+        try:
+            client.create_index(collection_name, index_params)
+            log.info("创建标量索引 collection={} fields={}", collection_name, fields_missing)
+        except Exception as e:
+            # 1100 = index type not match（字段已有其他类型索引如 Trie，同样可用）
+            log.warning("创建标量索引失败（可能字段已有索引）collection={} fields={} err={}",
+                        collection_name, fields_missing, e)
 
     def _store(self, name: Collection) -> MilvusVectorStore:
         return self._stores[name]
@@ -81,7 +179,8 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         """构造 Milvus metadata 过滤器。
 
         - source_ids → MetadataFilter(key="source_id", operator=IN, value=source_ids)
-        - document_ids → MetadataFilter(key="document_id", operator=IN, value=document_ids)
+        - document_ids → MetadataFilter(key="doc_id", operator=IN, value=document_ids)
+          （doc_id 是 schema 独立 VARCHAR 字段，有 INVERTED 索引）
         - 同时存在 → AND 组合
         """
         filters: list[MetadataFilter] = []
@@ -90,7 +189,7 @@ class MilvusVectorStoreBackend(BaseVectorStore):
                 key="source_id", value=source_ids, operator=FilterOperator.IN))
         if document_ids:
             filters.append(MetadataFilter(
-                key="document_id", value=document_ids, operator=FilterOperator.IN))
+                key="doc_id", value=document_ids, operator=FilterOperator.IN))
         if not filters:
             return None
         return MetadataFilters(filters=filters, condition="and")
@@ -110,11 +209,23 @@ class MilvusVectorStoreBackend(BaseVectorStore):
                 uniq_idx.append(i)
 
         # 2. 构造 TextNode 列表
+        # 关键：llama_index 会将 node.ref_doc_id 写入 schema 独立字段 doc_id（VARCHAR），
+        # 同时 node_to_metadata_dict 也会将 ref_doc_id 写入 $meta["document_id"]。
+        # 我们必须设置 SOURCE 关系让 ref_doc_id = 业务 document_id，
+        # 否则 doc_id 字段会变成字符串 "None"，INVERTED 索引用不上。
         nodes: list[TextNode] = []
         for i in uniq_idx:
             meta = (metadatas[i] if metadatas else {}) or {}
-            nodes.append(TextNode(
-                id_=ids[i], text=texts[i], embedding=embeddings[i], metadata=meta))
+            kwargs: dict[str, Any] = {
+                "id_": ids[i], "text": texts[i],
+                "embedding": embeddings[i], "metadata": meta,
+            }
+            doc_id = meta.get("document_id")
+            if doc_id:
+                kwargs["relationships"] = {
+                    NodeRelationship.SOURCE: RelatedNodeInfo(node_id=str(doc_id))
+                }
+            nodes.append(TextNode(**kwargs))
 
         # 3. MilvusVectorStore 内部会按 node_id upsert（同 id 覆盖）
         #    所以无需预先查询去重，直接 add 即可
@@ -169,30 +280,29 @@ class MilvusVectorStoreBackend(BaseVectorStore):
     def _delete_by_filter(self, name: Collection, *,
                           source_ids: list[str] | None = None,
                           document_ids: list[str] | None = None) -> None:
-        """按 metadata 过滤删除（先查 id 再按 id 删）。"""
+        """按 source_id / document_id 过滤删除。
+
+        source_id 和 doc_id 均为 schema 独立 VARCHAR 字段，各有 INVERTED 索引，
+        delete 表达式可直接走索引精准命中，无需先查再删。
+        """
+        if not source_ids and not document_ids:
+            return
+        parts: list[str] = []
+        if source_ids:
+            ids_str = ", ".join(f"'{sid}'" for sid in source_ids)
+            parts.append(f"source_id in [{ids_str}]")
+        if document_ids:
+            dids_str = ", ".join(f"'{did}'" for did in document_ids)
+            parts.append(f"doc_id in [{dids_str}]")
+        expr = " and ".join(parts)
+
         try:
-            filters = self._build_filters(source_ids, document_ids)
-            if filters is None:
-                return
-            store = self._store(name)
-            # 先用查询取出所有匹配的 node_id
-            # 取一个较大的 top_k 保证覆盖（受 Milvus 返回上限约束）
-            vsq = VectorStoreQuery(
-                query_embedding=[0.0] * self._dim,
-                similarity_top_k=10000,
-                mode="default",
-                filters=filters,
-            )
-            try:
-                result = store.query(vsq)
-                node_ids = [n.node_id for n in (result.nodes or [])]
-            except Exception:
-                # 兜底：query 失败时改用 storage_context 的 delete 方法
-                node_ids = []
-            if node_ids:
-                store.delete_nodes(node_ids=node_ids)
+            client = self._store(name).client
+            collection_name = f"{self._prefix}{name}"
+            resp = client.delete(collection_name=collection_name, filter=expr)
+            deleted_count = resp.get("delete_count", 0) if isinstance(resp, dict) else 0
             log.info("向量删除 collection={} source_ids={} document_ids={} 删除数={}",
-                     name, source_ids, document_ids, len(node_ids))
+                     name, source_ids, document_ids, deleted_count)
         except Exception as e:
             log.error("向量删除失败 collection={} source_ids={} document_ids={} err={}",
                       name, source_ids, document_ids, e)
@@ -259,17 +369,23 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         try:
             client = self._store("chunks").client
             collection_name = f"{self._prefix}chunks"
-            res = client.query(
+            # Milvus 限制 (offset+limit) <= 16384，使用 query_iterator 游标分页
+            iterator = client.query_iterator(
                 collection_name=collection_name,
                 filter="source_id != ''",
                 output_fields=["source_id"],
-                limit=100000,
+                batch_size=16384,
             )
             ids: set[str] = set()
-            for row in res:
-                sid = row.get("source_id")
-                if sid:
-                    ids.add(str(sid))
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                for row in batch:
+                    sid = row.get("source_id")
+                    if sid:
+                        ids.add(str(sid))
+            iterator.close()
             return list(ids)
         except Exception as e:
             log.warning("列出 Milvus source_id 失败 err={}", e)
@@ -280,13 +396,24 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         try:
             client = self._store("entities").client
             collection_name = f"{self._prefix}entities"
-            res = client.query(
+            # Milvus 限制 (offset+limit) <= 16384，使用 query_iterator 游标分页
+            iterator = client.query_iterator(
                 collection_name=collection_name,
                 filter="id != ''",
                 output_fields=["id"],
-                limit=1000000,
+                batch_size=16384,
             )
-            return [str(row.get("id")) for row in res if row.get("id") is not None]
+            result: list[str] = []
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                for row in batch:
+                    eid = row.get("id")
+                    if eid is not None:
+                        result.append(str(eid))
+            iterator.close()
+            return result
         except Exception as e:
             log.warning("列出 Milvus entity_id 失败 err={}", e)
             return []
