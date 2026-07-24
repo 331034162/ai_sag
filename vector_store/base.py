@@ -1,8 +1,11 @@
 """向量库抽象基类：定义统一接口，便于切换 ChromaDB/Milvus/FAISS。
 
 同步方法供入库等同步场景使用；
-异步方法（a 前缀）供异步检索流程使用，默认用 asyncio.to_thread 包装同步实现。
-子类若有原生异步能力（如 Milvus async）可重写异步方法。
+异步方法（a 前缀）供异步检索流程使用。
+
+默认实现：基类用 asyncio.to_thread 包装同步实现，兼容 ChromaDB 等无异步 SDK 的后端。
+纯协程实现：Milvus / PGVector 后端重写了所有 a* 方法，使用 LlamaIndex 原生异步接口
+（AsyncMilvusClient / async SQLAlchemy），为真正的协程，无需线程池。
 """
 from __future__ import annotations
 

@@ -10,6 +10,10 @@
   - 写入：Milvus 服务端批量写入，性能优于本地文件方案
   - 查询：原生支持 metadata filter + ANN 索引，毫秒级
   - 删除：原生物理删除，无内存标记开销
+
+异步说明：
+  - 所有 a* 方法均使用 LlamaIndex 原生 AsyncMilvusClient（基于 async gRPC），
+    为真正的协程实现，不经过 asyncio.to_thread 包装。
 """
 from __future__ import annotations
 
@@ -416,4 +420,205 @@ class MilvusVectorStoreBackend(BaseVectorStore):
             return result
         except Exception as e:
             log.warning("列出 Milvus entity_id 失败 err={}", e)
+            return []
+
+    # ---------------- 异步接口（原生 AsyncMilvusClient，真协程）----------------
+
+    async def aadd(self, name: Collection, ids: list[str], texts: list[str],
+                   embeddings: list[list[float]], metadatas: list[dict] | None = None) -> None:
+        """异步写入：通过 LlamaIndex async_add → AsyncMilvusClient 原生异步 gRPC。"""
+        if not ids:
+            return
+        seen: set[str] = set()
+        uniq_idx = [i for i, cid in enumerate(ids) if cid not in seen and not seen.add(cid)]
+        nodes: list[TextNode] = []
+        for i in uniq_idx:
+            meta = (metadatas[i] if metadatas else {}) or {}
+            kwargs: dict[str, Any] = {
+                "id_": ids[i], "text": texts[i],
+                "embedding": embeddings[i], "metadata": meta,
+            }
+            doc_id = meta.get("document_id")
+            if doc_id:
+                kwargs["relationships"] = {
+                    NodeRelationship.SOURCE: RelatedNodeInfo(node_id=str(doc_id))
+                }
+            nodes.append(TextNode(**kwargs))
+        if nodes:
+            await self._store(name).async_add(nodes)
+        log.info("向量异步写入(Milvus原生) collection={} 传入={} 内部去重后={} 实际写入={}",
+                 name, len(ids), len(uniq_idx), len(nodes))
+
+    async def aquery(self, name: Collection, query_embedding: list[float], top_k: int,
+                     similarity_threshold: float = 0.0,
+                     source_ids: list[str] | None = None,
+                     document_ids: list[str] | None = None) -> list[tuple[str, float]]:
+        """异步查询：通过 LlamaIndex aquery → AsyncMilvusClient 原生异步 gRPC。"""
+        if name in _NO_SOURCE_FILTER:
+            filters = None
+        else:
+            filters = self._build_filters(source_ids, document_ids)
+
+        vsq_kwargs: dict[str, Any] = {
+            "query_embedding": query_embedding,
+            "similarity_top_k": top_k,
+            "mode": "default",
+        }
+        if filters is not None:
+            vsq_kwargs["filters"] = filters
+        vsq = VectorStoreQuery(**vsq_kwargs)
+
+        result = await self._store(name).aquery(vsq)
+        hits: list[tuple[str, float]] = []
+        if result.nodes and result.similarities is not None:
+            safe_ids = result.ids or []
+            for idx, (node, sim) in enumerate(zip(result.nodes, result.similarities)):
+                if sim >= similarity_threshold:
+                    real_id = safe_ids[idx] if idx < len(safe_ids) else node.node_id
+                    hits.append((real_id, float(sim)))
+        log.debug("向量异步查询(Milvus原生) collection={} top_k={} 阈值={} 结果数={}",
+                  name, top_k, similarity_threshold, len(hits))
+        return hits
+
+    async def adelete_by_source(self, source_id: str) -> None:
+        """异步按 source_id 删除：AsyncMilvusClient 原生删除。"""
+        for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
+            await self._adelete_by_filter(name, source_ids=[source_id])
+
+    async def adelete_by_document(self, source_id: str, document_id: str) -> None:
+        """异步按 (source_id, document_id) 删除。"""
+        for name in ("chunks", "event_titles", "event_contents", "event_summaries"):
+            await self._adelete_by_filter(name, source_ids=[source_id], document_ids=[document_id])
+
+    async def _adelete_by_filter(self, name: Collection, *,
+                                 source_ids: list[str] | None = None,
+                                 document_ids: list[str] | None = None) -> None:
+        """异步按 source_id / document_id 过滤删除（走 INVERTED 索引精准命中）。"""
+        if not source_ids and not document_ids:
+            return
+        parts: list[str] = []
+        if source_ids:
+            ids_str = ", ".join(f"'{sid}'" for sid in source_ids)
+            parts.append(f"source_id in [{ids_str}]")
+        if document_ids:
+            dids_str = ", ".join(f"'{did}'" for did in document_ids)
+            parts.append(f"doc_id in [{dids_str}]")
+        expr = " and ".join(parts)
+
+        try:
+            store = self._store(name)
+            collection_name = f"{self._prefix}{name}"
+            resp = await store.async_client.delete(collection_name=collection_name, filter=expr)
+            deleted_count = resp.get("delete_count", 0) if isinstance(resp, dict) else 0
+            log.info("向量异步删除(Milvus原生) collection={} source_ids={} document_ids={} 删除数={}",
+                     name, source_ids, document_ids, deleted_count)
+        except Exception as e:
+            log.error("向量异步删除失败 collection={} source_ids={} document_ids={} err={}",
+                      name, source_ids, document_ids, e)
+
+    async def adelete_entities_by_ids(self, entity_ids: list[str]) -> None:
+        """异步按 entity_id 删除：AsyncMilvusClient 原生删除。"""
+        if not entity_ids:
+            return
+        try:
+            await self._store("entities").adelete_nodes(node_ids=entity_ids)
+            log.info("实体向量异步删除 ids数量={}", len(entity_ids))
+        except Exception as e:
+            log.error("实体向量异步删除失败 ids={} err={}", entity_ids, e)
+
+    async def adelete_event_ids(self, event_ids: list[str]) -> None:
+        """异步按 event_id 删除 event_titles / event_contents / event_summaries。"""
+        if not event_ids:
+            return
+        for name in ("event_titles", "event_contents", "event_summaries"):
+            try:
+                await self._store(name).adelete_nodes(node_ids=event_ids)
+                log.info("事件向量异步删除 collection={} ids数量={}", name, len(event_ids))
+            except Exception as e:
+                log.warning("事件向量异步删除失败 collection={} ids={} err={}",
+                            name, event_ids, e)
+
+    async def aget_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
+        """异步按 id 批量取向量：AsyncMilvusClient 原生查询。"""
+        if not ids:
+            return {}
+        result: dict[str, list[float]] = {}
+        try:
+            store = self._store(name)
+            collection_name = f"{self._prefix}{name}"
+            res = await store.async_client.query(
+                collection_name=collection_name,
+                filter=f"id in {list(ids)}",
+                output_fields=["id", "embedding"],
+            )
+            for row in res:
+                row_id = str(row.get("id") or row.get("pk"))
+                emb = row.get("embedding")
+                if row_id and emb is not None:
+                    result[row_id] = list(emb)
+        except Exception as e:
+            log.warning("Milvus 异步批量取向量失败 collection={} ids数={} err={}",
+                        name, len(ids), e)
+        return result
+
+    async def alist_source_ids(self) -> list[str]:
+        """异步列出所有 source_id：AsyncMilvusClient 分页查询。"""
+        try:
+            store = self._store("chunks")
+            collection_name = f"{self._prefix}chunks"
+            async_client = store.async_client
+            ids: set[str] = set()
+            offset = 0
+            limit = 16384
+            while True:
+                res = await async_client.query(
+                    collection_name=collection_name,
+                    filter="source_id != ''",
+                    output_fields=["source_id"],
+                    offset=offset,
+                    limit=limit,
+                )
+                if not res:
+                    break
+                for row in res:
+                    sid = row.get("source_id")
+                    if sid:
+                        ids.add(str(sid))
+                if len(res) < limit:
+                    break
+                offset += limit
+            return list(ids)
+        except Exception as e:
+            log.warning("列出 Milvus source_id 失败(异步) err={}", e)
+            return []
+
+    async def alist_all_entity_ids(self) -> list[str]:
+        """异步列出所有 entity_id：AsyncMilvusClient 分页查询。"""
+        try:
+            store = self._store("entities")
+            collection_name = f"{self._prefix}entities"
+            async_client = store.async_client
+            result: list[str] = []
+            offset = 0
+            limit = 16384
+            while True:
+                res = await async_client.query(
+                    collection_name=collection_name,
+                    filter="id != ''",
+                    output_fields=["id"],
+                    offset=offset,
+                    limit=limit,
+                )
+                if not res:
+                    break
+                for row in res:
+                    eid = row.get("id")
+                    if eid is not None:
+                        result.append(str(eid))
+                if len(res) < limit:
+                    break
+                offset += limit
+            return result
+        except Exception as e:
+            log.warning("列出 Milvus entity_id 失败(异步) err={}", e)
             return []
