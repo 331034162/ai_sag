@@ -16,6 +16,7 @@ import os
 import tempfile
 import time
 from typing import Any, Literal, get_args
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -399,7 +400,8 @@ def create_app() -> FastAPI:
         content = doc.get("content") or ""
         title = doc.get("title") or source_id
         buf = io.BytesIO(content.encode("utf-8"))
-        headers = {"Content-Disposition": f'attachment; filename="{title}.md"'}
+        safe_filename = quote(f"{title}.md")
+        headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}"}
         return StreamingResponse(buf, media_type="text/markdown", headers=headers)
 
     # ---- 文档更新（元信息）----

@@ -48,23 +48,8 @@ class BaseVectorStore(ABC):
         ...
 
     @abstractmethod
-    def delete_event_ids(self, event_ids: list[str]) -> None:
-        """按 event_id 删除 event_titles / event_contents 向量（硬删除软删事件）。"""
-        ...
-
-    @abstractmethod
     def get_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """按 id 批量取已存向量，返回 {id: embedding}（仅含找到的）。"""
-        ...
-
-    @abstractmethod
-    def list_source_ids(self) -> list[str]:
-        """列出向量库中所有已知的 source_id（从 chunks collection 的 metadata 提取）。"""
-        ...
-
-    @abstractmethod
-    def list_all_entity_ids(self) -> list[str]:
-        """列出 entities collection 中所有 entity_id（供对账清理孤儿实体向量）。"""
         ...
 
     # ---------------- 异步接口（默认用 to_thread 包装同步实现）----------------
@@ -93,21 +78,10 @@ class BaseVectorStore(ABC):
             return
         await asyncio.to_thread(self.delete_entities_by_ids, entity_ids)
 
-    async def adelete_event_ids(self, event_ids: list[str]) -> None:
-        if not event_ids:
-            return
-        await asyncio.to_thread(self.delete_event_ids, event_ids)
-
     async def aget_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         if not ids:
             return {}
         return await asyncio.to_thread(self.get_embeddings, name, ids)
-
-    async def alist_source_ids(self) -> list[str]:
-        return await asyncio.to_thread(self.list_source_ids)
-
-    async def alist_all_entity_ids(self) -> list[str]:
-        return await asyncio.to_thread(self.list_all_entity_ids)
 
     # ---- 语义化便捷方法（同步）----
 

@@ -208,22 +208,6 @@ class MysqlStore:
             (1 if synced else 0, source_id),
         )
 
-    async def find_unsynced_sources(self) -> list[str]:
-        rows = await self._fetchall(
-            "SELECT id FROM aisag_sources WHERE vector_synced = 0"
-        )
-        return [str(r["id"]) for r in rows]
-
-    async def list_all_source_ids(self) -> list[str]:
-        """列出 MySQL 中所有 source_id（含已软删除事件的）。"""
-        rows = await self._fetchall("SELECT id FROM aisag_sources")
-        return [str(r["id"]) for r in rows]
-
-    async def list_all_entity_ids(self) -> list[str]:
-        """列出 MySQL 中所有 entity_id（供对账比对孤儿实体向量）。"""
-        rows = await self._fetchall("SELECT id FROM aisag_entities")
-        return [str(r["id"]) for r in rows]
-
     async def check_duplicate(self, name: str, md5: str) -> str | None:
         """检查是否存在同名且同 MD5 的未归档文档。
 
@@ -757,83 +741,6 @@ class MysqlStore:
 
                 return n, orphan_ids
 
-    async def hard_delete_soft_deleted_events(self) -> tuple[list[str], list[str]]:
-        """硬删除所有 deleted_at IS NOT NULL 的软删除事件。
-
-        删除链路：event_entities → events → 检测孤儿 entities → 删除孤儿 entities。
-        返回 (deleted_event_ids, orphan_entity_ids)，供上层清理向量库。
-        """
-        async with self.transaction() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                # 1. 查所有软删除的事件
-                await cur.execute(
-                    "SELECT id FROM aisag_events WHERE deleted_at IS NOT NULL"
-                )
-                rows = await cur.fetchall()
-                event_ids = [str(r["id"]) for r in rows]
-                if not event_ids:
-                    return [], []
-
-                log.info("硬删除扫描：发现 {} 条软删除事件，开始物理清理", len(event_ids))
-
-                # 2. 查受影响 entity_id（用于后续孤儿检测）
-                ph_ev = ",".join(["%s"] * len(event_ids))
-                await cur.execute(
-                    f"SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
-                    f"WHERE ee.event_id IN ({ph_ev})",
-                    event_ids,
-                )
-                affected = await cur.fetchall()
-                affected_entity_ids = [str(r["entity_id"]) for r in affected]
-
-                # 3. 删除 event_entities 关联
-                await cur.execute(
-                    f"DELETE FROM aisag_event_entities WHERE event_id IN ({ph_ev})",
-                    event_ids,
-                )
-
-                # 4. 硬删除 events
-                await cur.execute(
-                    f"DELETE FROM aisag_events WHERE id IN ({ph_ev})",
-                    event_ids,
-                )
-                n = cur.rowcount
-                if self._faiss_map_enabled:
-                    # 同步删 events 映射表
-                    await cur.execute(
-                        f"DELETE FROM faiss_events_map WHERE uuid IN ({ph_ev})",
-                        event_ids,
-                    )
-
-                # 5. 检测孤儿 entities（无任何 event_entities 引用的）
-                orphan_ids: list[str] = []
-                if affected_entity_ids:
-                    ph_aff = ",".join(["%s"] * len(affected_entity_ids))
-                    await cur.execute(
-                        f"SELECT e.id FROM aisag_entities e WHERE e.id IN ({ph_aff}) "
-                        f"AND NOT EXISTS ("
-                        f"  SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = e.id"
-                        f")",
-                        affected_entity_ids,
-                    )
-                    orphans = await cur.fetchall()
-                    orphan_ids = [str(r["id"]) for r in orphans]
-                    if orphans:
-                        ph_o = ",".join(["%s"] * len(orphan_ids))
-                        await cur.execute(
-                            f"DELETE FROM aisag_entities WHERE id IN ({ph_o})",
-                            orphan_ids,
-                        )
-                        if self._faiss_map_enabled:
-                            # 同步删实体映射表
-                            await cur.execute(
-                                f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph_o})",
-                                orphan_ids,
-                            )
-
-                log.info("硬删除完成 events={} 孤儿entities={}", n, len(orphan_ids))
-                return event_ids, orphan_ids
-
     # ---------------- 管理类查询 ----------------
 
     async def list_sources(self, *, include_archived: bool = False, keyword: str | None = None,
@@ -1077,16 +984,6 @@ class MysqlStore:
         """查 FAISS 映射表全部 faiss_hash（一致性对账用，FAISS 后端专用）。"""
         rows = await self._fetchall(f"SELECT faiss_hash FROM {map_table}", [])
         return [int(r["faiss_hash"]) for r in rows]
-
-    async def fetch_distinct_source_ids(self) -> list[str]:
-        """查 aisag_chunks 表所有去重 source_id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT DISTINCT source_id FROM aisag_chunks", [])
-        return [str(r["source_id"]) for r in rows]
-
-    async def fetch_all_entity_ids(self) -> list[str]:
-        """查 aisag_entities 表所有 id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT id FROM aisag_entities", [])
-        return [str(r["id"]) for r in rows]
 
     def to_event_record(self, event: ExtractedEvent, *, source_id: str, document_id: str,
                         chunk_id: str, rank_index: int) -> Event:

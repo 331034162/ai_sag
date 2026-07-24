@@ -155,22 +155,6 @@ class ChromaVectorStoreBackend(BaseVectorStore):
         after = col.count()
         log.info("实体向量删除 ids数量={} 删除前={} 删除后={}", len(entity_ids), before, after)
 
-    def delete_event_ids(self, event_ids: list[str]) -> None:
-        """按 event_id 硬删除 event_titles / event_contents 向量。"""
-        if not event_ids:
-            return
-        for name in ("event_titles", "event_contents", "event_summaries"):
-            try:
-                col = self._store(name)._collection
-                before = col.count()
-                col.delete(ids=event_ids)
-                after = col.count()
-                log.info("事件向量硬删除 collection={} ids数量={} 删除前={} 删除后={}",
-                         name, len(event_ids), before, after)
-            except Exception as e:
-                log.warning("事件向量硬删除失败 collection={} ids={} err={}",
-                            name, event_ids, e)
-
     def get_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         if not ids:
             return {}
@@ -182,34 +166,3 @@ class ChromaVectorStoreBackend(BaseVectorStore):
         # 确保 embedding 是 list[float]，ChromaDB 可能返回 numpy 数组
         return {id_: list(emb) for id_, emb in zip(result.get("ids", []), emb_list)
                 if emb is not None}
-
-    def list_source_ids(self) -> list[str]:
-        """列出 chunks collection 中所有 source_id（去重）。"""
-        try:
-            col = self._store("chunks")._collection
-            result = col.get(include=["metadatas"])
-            ids = set()
-            metas = result.get("metadatas")
-            if metas is None:
-                metas = []
-            for meta in metas:
-                sid = meta.get("source_id") if meta else None
-                if sid:
-                    ids.add(sid)
-            return list(ids)
-        except Exception as e:
-            log.warning("列出向量库 source_id 失败 err={}", e)
-            return []
-
-    def list_all_entity_ids(self) -> list[str]:
-        """列出 entities collection 中所有 entity_id。"""
-        try:
-            col = self._store("entities")._collection
-            result = col.get(include=[])
-            ids = result.get("ids")
-            if ids is None:
-                ids = []
-            return list(ids)
-        except Exception as e:
-            log.warning("列出向量库 entity_id 失败 err={}", e)
-            return []

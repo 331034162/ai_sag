@@ -205,27 +205,6 @@ class FaissVectorStoreBackend(BaseVectorStore):
             except Exception as e:
                 log.error("实体向量删除失败 ids={} err={}", entity_ids, e)
 
-    def delete_event_ids(self, event_ids: list[str]) -> None:
-        """按 event_id 删除 event_titles / event_contents / event_summaries。"""
-        if not event_ids:
-            return
-        from ..storage import uuid_to_int64
-        import faiss
-        with self._lock:
-            hashes = [uuid_to_int64(eid) for eid in event_ids]
-            selector = faiss.IDSelectorBatch(hashes)  # type: ignore[name-defined]
-            for name in ("event_titles", "event_contents", "event_summaries"):
-                store = self._stores[name]
-                try:
-                    removed = store.remove_ids(selector)
-                    if removed > 0:
-                        self._persist(name)
-                    log.info("事件向量硬删除 collection={} ids数量={} 实际删除={}",
-                             name, len(event_ids), removed)
-                except Exception as e:
-                    log.error("事件向量删除失败 collection={} ids={} err={}",
-                              name, event_ids, e)
-
     def get_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """按 id 批量取已存向量。通过 faiss reconstruct + hash 反查 UUID（可选）。"""
         if not ids:
@@ -241,19 +220,6 @@ class FaissVectorStoreBackend(BaseVectorStore):
                 except Exception:
                     continue  # id 不存在
         return result
-
-    def list_source_ids(self) -> list[str]:
-        """从 DB aisag_chunks 表反查所有 source_id（去重）。
-
-        此方法为同步接口，需在事件循环外调用。
-        """
-        return self._async_run_sync(self._alist_source_ids_impl)
-
-    def list_all_entity_ids(self) -> list[str]:
-        """从 DB aisag_entities 表反查所有 entity id（UUID）。"""
-        return self._async_run_sync(self._alist_all_entity_ids_impl)
-
-    # ---------------- 异步接口重写（FAISS 后端特有）----------------
 
     async def aquery(self, name: Collection, query_embedding: list[float], top_k: int,
                      similarity_threshold: float = 0.0,
@@ -334,12 +300,6 @@ class FaissVectorStoreBackend(BaseVectorStore):
     async def adelete_by_document(self, source_id: str, document_id: str) -> None:
         await self._adelete_by_document_impl(source_id, document_id)
 
-    async def alist_source_ids(self) -> list[str]:
-        return await self._alist_source_ids_impl()
-
-    async def alist_all_entity_ids(self) -> list[str]:
-        return await self._alist_all_entity_ids_impl()
-
     async def aget_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         # FAISS reconstruct 是同步内存操作，直接走 to_thread
         if not ids:
@@ -391,14 +351,6 @@ class FaissVectorStoreBackend(BaseVectorStore):
                 except Exception as e:
                     log.error("向量删除失败 collection={} source_id={} document_id={} err={}",
                               name, source_id, document_id, e)
-
-    async def _alist_source_ids_impl(self) -> list[str]:
-        """从 DB aisag_chunks 表查所有 source_id（去重）。"""
-        return await self._require_db().fetch_distinct_source_ids()
-
-    async def _alist_all_entity_ids_impl(self) -> list[str]:
-        """从 DB aisag_entities 表查所有 entity id（UUID）。"""
-        return await self._require_db().fetch_all_entity_ids()
 
     # ---------------- 一致性校验 ----------------
 

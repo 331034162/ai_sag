@@ -93,6 +93,7 @@ class MilvusVectorStoreBackend(BaseVectorStore):
                     dim=self._dim,
                     collection_name=collection_name,
                     overwrite=self._overwrite,
+                    use_async_client=True,
                     similarity_top_k=10,
                 )
             else:
@@ -102,6 +103,7 @@ class MilvusVectorStoreBackend(BaseVectorStore):
                     dim=self._dim,
                     collection_name=collection_name,
                     overwrite=self._overwrite,
+                    use_async_client=True,
                     # source_id 作为独立 VARCHAR 字段加入 schema，可建 INVERTED 索引
                     # node_to_metadata_dict 已将 metadata["source_id"] 写入 $meta，
                     # enable_dynamic_field=True 下自动匹配到 schema 同名字段
@@ -320,17 +322,6 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         except Exception as e:
             log.error("实体向量删除失败 ids={} err={}", entity_ids, e)
 
-    def delete_event_ids(self, event_ids: list[str]) -> None:
-        """按 event_id 删除 event_titles / event_contents / event_summaries。"""
-        if not event_ids:
-            return
-        for name in ("event_titles", "event_contents", "event_summaries"):
-            try:
-                self._store(name).delete_nodes(node_ids=event_ids)
-                log.info("事件向量删除 collection={} ids数量={}", name, len(event_ids))
-            except Exception as e:
-                log.warning("事件向量删除失败 collection={} ids={} err={}", name, event_ids, e)
-
     def get_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """按 id 批量取已存向量。
 
@@ -367,60 +358,6 @@ class MilvusVectorStoreBackend(BaseVectorStore):
             log.warning("Milvus 批量取向量失败 collection={} ids数={} err={}",
                         name, len(ids), e)
         return result
-
-    def list_source_ids(self) -> list[str]:
-        """从 chunks collection 查询所有 source_id（去重）。"""
-        try:
-            client = self._store("chunks").client
-            collection_name = f"{self._prefix}chunks"
-            # Milvus 限制 (offset+limit) <= 16384，使用 query_iterator 游标分页
-            iterator = client.query_iterator(
-                collection_name=collection_name,
-                filter="source_id != ''",
-                output_fields=["source_id"],
-                batch_size=16384,
-            )
-            ids: set[str] = set()
-            while True:
-                batch = iterator.next()
-                if not batch:
-                    break
-                for row in batch:
-                    sid = row.get("source_id")
-                    if sid:
-                        ids.add(str(sid))
-            iterator.close()
-            return list(ids)
-        except Exception as e:
-            log.warning("列出 Milvus source_id 失败 err={}", e)
-            return []
-
-    def list_all_entity_ids(self) -> list[str]:
-        """从 entities collection 查询所有 entity_id。"""
-        try:
-            client = self._store("entities").client
-            collection_name = f"{self._prefix}entities"
-            # Milvus 限制 (offset+limit) <= 16384，使用 query_iterator 游标分页
-            iterator = client.query_iterator(
-                collection_name=collection_name,
-                filter="id != ''",
-                output_fields=["id"],
-                batch_size=16384,
-            )
-            result: list[str] = []
-            while True:
-                batch = iterator.next()
-                if not batch:
-                    break
-                for row in batch:
-                    eid = row.get("id")
-                    if eid is not None:
-                        result.append(str(eid))
-            iterator.close()
-            return result
-        except Exception as e:
-            log.warning("列出 Milvus entity_id 失败 err={}", e)
-            return []
 
     # ---------------- 异步接口（原生 AsyncMilvusClient，真协程）----------------
 
@@ -508,13 +445,14 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         try:
             store = self._store(name)
             collection_name = f"{self._prefix}{name}"
-            resp = await store.async_client.delete(collection_name=collection_name, filter=expr)
+            resp = await store.aclient.delete(collection_name=collection_name, filter=expr)
             deleted_count = resp.get("delete_count", 0) if isinstance(resp, dict) else 0
             log.info("向量异步删除(Milvus原生) collection={} source_ids={} document_ids={} 删除数={}",
                      name, source_ids, document_ids, deleted_count)
-        except Exception as e:
-            log.error("向量异步删除失败 collection={} source_ids={} document_ids={} err={}",
-                      name, source_ids, document_ids, e)
+        except Exception:
+            log.exception("向量异步删除失败 collection={} source_ids={} document_ids={}",
+                          name, source_ids, document_ids)
+            raise
 
     async def adelete_entities_by_ids(self, entity_ids: list[str]) -> None:
         """异步按 entity_id 删除：AsyncMilvusClient 原生删除。"""
@@ -526,18 +464,6 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         except Exception as e:
             log.error("实体向量异步删除失败 ids={} err={}", entity_ids, e)
 
-    async def adelete_event_ids(self, event_ids: list[str]) -> None:
-        """异步按 event_id 删除 event_titles / event_contents / event_summaries。"""
-        if not event_ids:
-            return
-        for name in ("event_titles", "event_contents", "event_summaries"):
-            try:
-                await self._store(name).adelete_nodes(node_ids=event_ids)
-                log.info("事件向量异步删除 collection={} ids数量={}", name, len(event_ids))
-            except Exception as e:
-                log.warning("事件向量异步删除失败 collection={} ids={} err={}",
-                            name, event_ids, e)
-
     async def aget_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """异步按 id 批量取向量：AsyncMilvusClient 原生查询。"""
         if not ids:
@@ -546,7 +472,7 @@ class MilvusVectorStoreBackend(BaseVectorStore):
         try:
             store = self._store(name)
             collection_name = f"{self._prefix}{name}"
-            res = await store.async_client.query(
+            res = await store.aclient.query(
                 collection_name=collection_name,
                 filter=f"id in {list(ids)}",
                 output_fields=["id", "embedding"],
@@ -560,65 +486,3 @@ class MilvusVectorStoreBackend(BaseVectorStore):
             log.warning("Milvus 异步批量取向量失败 collection={} ids数={} err={}",
                         name, len(ids), e)
         return result
-
-    async def alist_source_ids(self) -> list[str]:
-        """异步列出所有 source_id：AsyncMilvusClient 分页查询。"""
-        try:
-            store = self._store("chunks")
-            collection_name = f"{self._prefix}chunks"
-            async_client = store.async_client
-            ids: set[str] = set()
-            offset = 0
-            limit = 16384
-            while True:
-                res = await async_client.query(
-                    collection_name=collection_name,
-                    filter="source_id != ''",
-                    output_fields=["source_id"],
-                    offset=offset,
-                    limit=limit,
-                )
-                if not res:
-                    break
-                for row in res:
-                    sid = row.get("source_id")
-                    if sid:
-                        ids.add(str(sid))
-                if len(res) < limit:
-                    break
-                offset += limit
-            return list(ids)
-        except Exception as e:
-            log.warning("列出 Milvus source_id 失败(异步) err={}", e)
-            return []
-
-    async def alist_all_entity_ids(self) -> list[str]:
-        """异步列出所有 entity_id：AsyncMilvusClient 分页查询。"""
-        try:
-            store = self._store("entities")
-            collection_name = f"{self._prefix}entities"
-            async_client = store.async_client
-            result: list[str] = []
-            offset = 0
-            limit = 16384
-            while True:
-                res = await async_client.query(
-                    collection_name=collection_name,
-                    filter="id != ''",
-                    output_fields=["id"],
-                    offset=offset,
-                    limit=limit,
-                )
-                if not res:
-                    break
-                for row in res:
-                    eid = row.get("id")
-                    if eid is not None:
-                        result.append(str(eid))
-                if len(res) < limit:
-                    break
-                offset += limit
-            return result
-        except Exception as e:
-            log.warning("列出 Milvus entity_id 失败(异步) err={}", e)
-            return []

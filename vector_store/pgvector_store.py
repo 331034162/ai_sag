@@ -377,17 +377,6 @@ class PGVectorStoreBackend(BaseVectorStore):
         except Exception as e:
             log.error("实体向量删除失败 ids={} err={}", entity_ids, e)
 
-    def delete_event_ids(self, event_ids: list[str]) -> None:
-        """按 event_id 删除 event_titles / event_contents / event_summaries。"""
-        if not event_ids:
-            return
-        for name in ("event_titles", "event_contents", "event_summaries"):
-            try:
-                self._store(name).delete_nodes(node_ids=event_ids)
-                log.info("事件向量删除 collection={} ids数量={}", name, len(event_ids))
-            except Exception as e:
-                log.warning("事件向量删除失败 collection={} ids={} err={}", name, event_ids, e)
-
     def get_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """按 id 批量取已存向量。
 
@@ -436,44 +425,6 @@ class PGVectorStoreBackend(BaseVectorStore):
         所以传入 "sag_chunks" 实际建出来的是 "data_sag_chunks"。
         """
         return f"data_{self._prefix}{name}"
-
-    def list_source_ids(self) -> list[str]:
-        """从 chunks collection 查询所有 source_id（去重，走独立列 btree 索引）。"""
-        try:
-            from sqlalchemy import text
-            engine = getattr(self._store("chunks"), "_engine", None) \
-                or getattr(self._store("chunks"), "_sync_engine", None)
-            if engine is None:
-                return []
-            table_name = self._real_table_name("chunks")
-            # 走独立列 source_id（btree 索引），不再解析 JSONB
-            with engine.connect() as conn:
-                rows = conn.execute(text(
-                    f"SELECT DISTINCT source_id FROM {table_name} "
-                    f"WHERE source_id IS NOT NULL"
-                )).fetchall()
-            return [str(row[0]) for row in rows if row[0]]
-        except Exception as e:
-            log.warning("列出 PGVector source_id 失败 err={}", e)
-            return []
-
-    def list_all_entity_ids(self) -> list[str]:
-        """从 entities collection 查询所有 entity_id。"""
-        try:
-            from sqlalchemy import text
-            engine = getattr(self._store("entities"), "_engine", None) \
-                or getattr(self._store("entities"), "_sync_engine", None)
-            if engine is None:
-                return []
-            table_name = self._real_table_name("entities")
-            with engine.connect() as conn:
-                rows = conn.execute(text(
-                    f"SELECT node_id FROM {table_name}"
-                )).fetchall()
-            return [str(row[0]) for row in rows if row[0] is not None]
-        except Exception as e:
-            log.warning("列出 PGVector entity_id 失败 err={}", e)
-            return []
 
     # ---------------- 异步接口（原生 async SQLAlchemy，真协程）----------------
 
@@ -545,39 +496,35 @@ class PGVectorStoreBackend(BaseVectorStore):
         """异步按 source_id / document_id 过滤删除（走 btree 索引，真协程）。"""
         if not source_ids and not document_ids:
             return
-        try:
-            from sqlalchemy import text
-            store = self._store(name)
-            async_engine = getattr(store, "_async_engine", None)
-            if async_engine is None:
-                log.warning("PGVector _async_engine 不可用，回退到 to_thread 同步删除 collection={}", name)
-                import asyncio
-                await asyncio.to_thread(self._delete_by_filter, name,
-                                        source_ids=source_ids, document_ids=document_ids)
-                return
-            log.debug("PGVector 使用原生异步删除 collection={}", name)
-            table = self._real_table_name(name)
-            conditions = []
-            params: dict[str, Any] = {}
-            if source_ids:
-                conditions.append("source_id = ANY(:sids)")
-                params["sids"] = list(source_ids)
-            if document_ids:
-                conditions.append("document_id = ANY(:dids)")
-                params["dids"] = list(document_ids)
-            where_clause = " AND ".join(conditions)
-            async with async_engine.connect() as conn:
-                result = await conn.execute(
-                    text(f"DELETE FROM {self._schema}.{table} WHERE {where_clause}"),
-                    params,
-                )
-                deleted = result.rowcount or 0
-                await conn.commit()
-            log.info("向量异步删除(PG原生) collection={} source_ids={} document_ids={} 删除数={}",
-                     name, source_ids, document_ids, deleted)
-        except Exception as e:
-            log.error("向量异步删除失败 collection={} source_ids={} document_ids={} err={}",
-                      name, source_ids, document_ids, e)
+        from sqlalchemy import text
+        store = self._store(name)
+        async_engine = getattr(store, "_async_engine", None)
+        if async_engine is None:
+            log.warning("PGVector _async_engine 不可用，回退到 to_thread 同步删除 collection={}", name)
+            import asyncio
+            await asyncio.to_thread(self._delete_by_filter, name,
+                                    source_ids=source_ids, document_ids=document_ids)
+            return
+        log.debug("PGVector 使用原生异步删除 collection={}", name)
+        table = self._real_table_name(name)
+        conditions = []
+        params: dict[str, Any] = {}
+        if source_ids:
+            conditions.append("source_id = ANY(:sids)")
+            params["sids"] = list(source_ids)
+        if document_ids:
+            conditions.append("document_id = ANY(:dids)")
+            params["dids"] = list(document_ids)
+        where_clause = " AND ".join(conditions)
+        async with async_engine.connect() as conn:
+            result = await conn.execute(
+                text(f"DELETE FROM {self._schema}.{table} WHERE {where_clause}"),
+                params,
+            )
+            deleted = result.rowcount or 0
+            await conn.commit()
+        log.info("向量异步删除(PG原生) collection={} source_ids={} document_ids={} 删除数={}",
+                 name, source_ids, document_ids, deleted)
 
     async def adelete_entities_by_ids(self, entity_ids: list[str]) -> None:
         """异步按 entity_id 删除：async engine 原生删除。"""
@@ -588,18 +535,6 @@ class PGVectorStoreBackend(BaseVectorStore):
             log.info("实体向量异步删除 ids数量={}", len(entity_ids))
         except Exception as e:
             log.error("实体向量异步删除失败 ids={} err={}", entity_ids, e)
-
-    async def adelete_event_ids(self, event_ids: list[str]) -> None:
-        """异步按 event_id 删除 event_titles / event_contents / event_summaries。"""
-        if not event_ids:
-            return
-        for name in ("event_titles", "event_contents", "event_summaries"):
-            try:
-                await self._store(name).adelete_nodes(node_ids=event_ids)
-                log.info("事件向量异步删除 collection={} ids数量={}", name, len(event_ids))
-            except Exception as e:
-                log.warning("事件向量异步删除失败 collection={} ids={} err={}",
-                            name, event_ids, e)
 
     async def aget_embeddings(self, name: Collection, ids: list[str]) -> dict[str, list[float]]:
         """异步按 id 批量取向量：async engine 原生查询。"""
@@ -633,46 +568,3 @@ class PGVectorStoreBackend(BaseVectorStore):
             log.warning("PGVector 异步批量取向量失败 collection={} ids数={} err={}",
                         name, len(ids), e)
         return result
-
-    async def alist_source_ids(self) -> list[str]:
-        """异步列出所有 source_id：async engine 原生查询。"""
-        try:
-            from sqlalchemy import text
-            store = self._store("chunks")
-            async_engine = getattr(store, "_async_engine", None)
-            if async_engine is None:
-                log.warning("PGVector _async_engine 不可用，回退到 to_thread 列出 source_id")
-                import asyncio
-                return await asyncio.to_thread(self.list_source_ids)
-            log.debug("PGVector 使用原生异步列出 source_id")
-            table_name = self._real_table_name("chunks")
-            async with async_engine.connect() as conn:
-                rows = (await conn.execute(
-                    text(f"SELECT DISTINCT source_id FROM {table_name} "
-                         f"WHERE source_id IS NOT NULL")
-                )).fetchall()
-            return [str(row[0]) for row in rows if row[0]]
-        except Exception as e:
-            log.warning("列出 PGVector source_id 失败(异步) err={}", e)
-            return []
-
-    async def alist_all_entity_ids(self) -> list[str]:
-        """异步列出所有 entity_id：async engine 原生查询。"""
-        try:
-            from sqlalchemy import text
-            store = self._store("entities")
-            async_engine = getattr(store, "_async_engine", None)
-            if async_engine is None:
-                log.warning("PGVector _async_engine 不可用，回退到 to_thread 列出 entity_id")
-                import asyncio
-                return await asyncio.to_thread(self.list_all_entity_ids)
-            log.debug("PGVector 使用原生异步列出 entity_id")
-            table_name = self._real_table_name("entities")
-            async with async_engine.connect() as conn:
-                rows = (await conn.execute(
-                    text(f"SELECT node_id FROM {table_name}")
-                )).fetchall()
-            return [str(row[0]) for row in rows if row[0] is not None]
-        except Exception as e:
-            log.warning("列出 PGVector entity_id 失败(异步) err={}", e)
-            return []

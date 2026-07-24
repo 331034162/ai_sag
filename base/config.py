@@ -627,10 +627,6 @@ class IngestConfig:
     # 并行抽取时的最大并发 worker 数量
     extract_parallel_workers: int = field(
         default_factory=lambda: int(_env("AISAG_EXTRACT_PARALLEL_WORKERS", "4")))
-    # 后台定时对账间隔秒数：定期清理"有 MySQL 无向量"的孤儿数据 + 硬删除软删事件。
-    # 设为 0 则禁用定时对账（仅启动时对账一次）。
-    reconcile_interval: int = field(
-        default_factory=lambda: int(_env("AISAG_RECONCILE_INTERVAL", "300")))
     # 并发入库上限：限制同时入库的文档数，防止 LLM API rate limit / embedding OOM。
     # 设为 1 则串行入库，设为 3~5 可平衡吞吐与资源安全。
     concurrency: int = field(

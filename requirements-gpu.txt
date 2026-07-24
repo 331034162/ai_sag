@@ -111,6 +111,8 @@ boto3==1.43.26                 # AWS S3 文件下载
 pydantic==2.13.4               # 数据校验与序列化（API Schema、配置模型）
 python-dotenv==1.2.2           # 从 .env 加载环境变量
 loguru==0.7.3                  # 结构化日志（控制台/文件双输出、异步写入、轮转压缩）
+cryptography>=44.0.0           # MySQL caching_sha2_password 认证（aiomysql 运行时依赖）
+pyyaml==6.0.2                  # YAML 配置解析（LLM profiles 加载）
 
 # ------------------------------------------------------------
 # Web 服务（SAG API 与前端）

@@ -150,20 +150,6 @@ class PgStore:
             (1 if synced else 0), source_id,
         )
 
-    async def find_unsynced_sources(self) -> list[str]:
-        rows = await self._fetchall(
-            "SELECT id FROM aisag_sources WHERE vector_synced = 0"
-        )
-        return [str(r["id"]) for r in rows]
-
-    async def list_all_source_ids(self) -> list[str]:
-        rows = await self._fetchall("SELECT id FROM aisag_sources")
-        return [str(r["id"]) for r in rows]
-
-    async def list_all_entity_ids(self) -> list[str]:
-        rows = await self._fetchall("SELECT id FROM aisag_entities")
-        return [str(r["id"]) for r in rows]
-
     async def check_duplicate(self, name: str, md5: str) -> str | None:
         r = await self._fetchone(
             "SELECT id FROM aisag_sources "
@@ -686,68 +672,6 @@ class PgStore:
 
                 return n, orphan_ids
 
-    async def hard_delete_soft_deleted_events(self) -> tuple[list[str], list[str]]:
-        pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await conn.fetch(
-                    "SELECT id FROM aisag_events WHERE deleted_at IS NOT NULL"
-                )
-                event_ids = [str(r["id"]) for r in rows]
-                if not event_ids:
-                    return [], []
-
-                log.info("硬删除扫描：发现 {} 条软删除事件，开始物理清理", len(event_ids))
-
-                ph_ev = self._ph(1, len(event_ids))
-                affected = await conn.fetch(
-                    f"SELECT DISTINCT ee.entity_id FROM aisag_event_entities ee "
-                    f"WHERE ee.event_id IN ({ph_ev})",
-                    *event_ids,
-                )
-                affected_entity_ids = [str(r["entity_id"]) for r in affected]
-
-                await conn.execute(
-                    f"DELETE FROM aisag_event_entities WHERE event_id IN ({ph_ev})",
-                    *event_ids,
-                )
-                result = await conn.execute(
-                    f"DELETE FROM aisag_events WHERE id IN ({ph_ev})",
-                    *event_ids,
-                )
-                n = int(result.split()[-1]) if result else 0
-                if self._faiss_map_enabled:
-                    await conn.execute(
-                        f"DELETE FROM faiss_events_map WHERE uuid IN ({ph_ev})",
-                        *event_ids,
-                    )
-
-                orphan_ids: list[str] = []
-                if affected_entity_ids:
-                    ph_aff = self._ph(1, len(affected_entity_ids))
-                    orphans = await conn.fetch(
-                        f"SELECT e.id FROM aisag_entities e WHERE e.id IN ({ph_aff}) "
-                        f"AND NOT EXISTS ("
-                        f"  SELECT 1 FROM aisag_event_entities ee WHERE ee.entity_id = e.id"
-                        f")",
-                        *affected_entity_ids,
-                    )
-                    orphan_ids = [str(r["id"]) for r in orphans]
-                    if orphans:
-                        ph_o = self._ph(1, len(orphan_ids))
-                        await conn.execute(
-                            f"DELETE FROM aisag_entities WHERE id IN ({ph_o})",
-                            *orphan_ids,
-                        )
-                        if self._faiss_map_enabled:
-                            await conn.execute(
-                                f"DELETE FROM faiss_entities_map WHERE uuid IN ({ph_o})",
-                                *orphan_ids,
-                            )
-
-                log.info("硬删除完成 events={} 孤儿entities={}", n, len(orphan_ids))
-                return event_ids, orphan_ids
-
     # ---------------- 管理类查询 ----------------
 
     async def list_sources(self, *, include_archived: bool = False, keyword: str | None = None,
@@ -978,16 +902,6 @@ class PgStore:
         """查 FAISS 映射表全部 faiss_hash（一致性对账用，FAISS 后端专用）。"""
         rows = await self._fetchall(f"SELECT faiss_hash FROM {map_table}")
         return [int(r["faiss_hash"]) for r in rows]
-
-    async def fetch_distinct_source_ids(self) -> list[str]:
-        """查 aisag_chunks 表所有去重 source_id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT DISTINCT source_id FROM aisag_chunks")
-        return [str(r["source_id"]) for r in rows]
-
-    async def fetch_all_entity_ids(self) -> list[str]:
-        """查 aisag_entities 表所有 id（FAISS 后端对账用）。"""
-        rows = await self._fetchall("SELECT id FROM aisag_entities")
-        return [str(r["id"]) for r in rows]
 
     def to_event_record(self, event: ExtractedEvent, *, source_id: str, document_id: str,
                         chunk_id: str, rank_index: int) -> Event:

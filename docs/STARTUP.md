@@ -288,7 +288,6 @@ SAG_LLM_PROFILE_RERANK_LLM_NAME=deepseek_chat
 # AISAG_EXTRACT_PARALLEL_WORKERS=4        # 并行抽取 worker 数（默认 4）
 # AISAG_EXTRACT_MAX_RETRIES=2             # 单 chunk 抽取最大重试次数（默认 2）
 # AISAG_INGEST_CONCURRENCY=2              # 并发入库文档数上限（默认 2，防 rate limit/OOM）
-# AISAG_RECONCILE_INTERVAL=300            # 向量-关系库对账间隔秒数（默认 300，0=仅启动时）
 # AISAG_TITLE_MAX_CHARS=100               # 事件标题字数上限（默认 100）
 # AISAG_SUMMARY_MAX_CHARS=500             # 事件摘要字数上限（默认 500）
 # AISAG_EMBED_SUMMARY=true                # 是否给事件摘要生成向量（默认 true）
@@ -329,7 +328,7 @@ python -m ai_sag.api --host 0.0.0.0 --port 8777 --reload
 启动成功后：
 - API 文档（Swagger）：http://localhost:8777/docs
 - 健康检查：http://localhost:8777/api/health
-- 首次启动自动执行：关系库建表（PG 用 `schema_pg.sql`，MySQL 用 `schema.sql`）→ 向量表（pgvector 后端时自动建 `data_sag_*` 5 张表）→ 启动定时对账任务（每 `reconcile_interval` 秒）
+- 首次启动自动执行：关系库建表（PG 用 `schema_pg.sql`，MySQL 用 `schema.sql`）→ 向量表（pgvector 后端时自动建 `data_sag_*` 5 张表）
 
 ### 3.2 启动 Web UI（终端 2）
 
@@ -369,7 +368,7 @@ python -m ai_sag.web --port 8080 --api http://localhost:8777
 | GET | `/api/documents/{id}/download` | 下载原文（.md） |
 | PATCH | `/api/documents/{id}` | 更新元信息 |
 | PUT | `/api/documents/{id}` | 更新文档内容（重建索引） |
-| DELETE | `/api/documents/{id}` | 删除文档（DB 软删 + 向量硬删 + 对账兜底） |
+| DELETE | `/api/documents/{id}` | 删除文档（DB 软删 + 向量硬删） |
 
 ### 4.2 检索与问答
 
@@ -549,7 +548,6 @@ const { answer, sections, trace } = await fetch(`${API_BASE}/api/ask`, {
 | `AISAG_EXTRACT_PARALLEL` | false | 事件抽取并行开关 |
 | `AISAG_EXTRACT_PARALLEL_WORKERS` | 4 | 并行抽取 worker 数 |
 | `AISAG_INGEST_CONCURRENCY` | 2 | 并发入库文档上限 |
-| `AISAG_RECONCILE_INTERVAL` | 300 | 向量-关系库对账间隔（秒） |
 | `AISAG_GENRE_DETECT` | true | 文档级文体识别开关 |
 | `AISAG_EMBED_SUMMARY` | true | 事件摘要向量化开关 |
 
@@ -628,13 +626,12 @@ python -c "from modelscope import snapshot_download; snapshot_download('AI-Model
 
 ### Q6：向量库与关系库数据不一致
 
-系统启动时自动执行一次全量对账，之后每 `RECONCILE_INTERVAL` 秒（默认 5 分钟）执行增量对账，自动清理：
-- 有关系库无向量的孤儿数据（补向量）
-- 有向量无关系库的孤儿向量（删向量）
-- source 状态不一致（标记 synced=0 触发补向量）
-- 软删事件残留的向量（硬删除）
+入库采用"先写关系库、后写向量库、失败回滚"的原子性保障：
+- 正常完成：两侧数据一致
+- 向量写入失败：自动回滚关系库（删除刚写入的数据 + 孤儿实体向量）
+- 进程崩溃（关系库已提交，向量库未写完）：标记 `vector_synced=False`，重启服务后系统自动检测并清理残留数据
 
-如需立即对账，重启 API 服务即可。
+如需手动清理，可通过 API 删除对应文档后重新上传。
 
 ### Q7：向量库存放在哪里？
 
